@@ -146,6 +146,7 @@ export function generateDrawioXml(topology: TopologyData): string {
     // Add links for this layer
     const linkCounts: Record<string, number> = {};
     const linkIndexMap: Record<string, number> = {};
+    const nodeMap = new Map(topology.nodes.map(n => [n.id, n]));
 
     layerLinks.forEach(link => {
       const pair = [link.source, link.target].sort().join('_');
@@ -164,10 +165,6 @@ export function generateDrawioXml(topology: TopologyData): string {
       
       const totalLinks = linkCounts[pair];
       const linkIndex = linkIndexMap[link.id];
-      if (totalLinks > 1) {
-        // Add curvature to separate multiple links
-        edgeStyle += 'curved=1;';
-      }
 
       if (layer === 'L3' && link.l3_routes && link.l3_routes.length > 0) {
         let hasForward = false; // source -> target
@@ -198,12 +195,37 @@ export function generateDrawioXml(topology: TopologyData): string {
       
       const geometry = edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
 
-      if (totalLinks > 1) {
-        // Add a control point to curve the line
-        // We don't have exact coordinates here easily, but Draw.io's curved=1 with exitX/Y can also work.
-        // Let's use exitX, exitY, entryX, entryY offsets
-        const offset = (linkIndex - (totalLinks - 1) / 2) * 0.2; // -0.2, 0, 0.2 etc
-        edge.att('style', edgeStyle + `exitX=${0.5 + offset};exitY=${0.5 + offset};entryX=${0.5 - offset};entryY=${0.5 - offset};`);
+      const nodeA = nodeMap.get(link.source);
+      const nodeB = nodeMap.get(link.target);
+      if (nodeA && nodeB) {
+        const dx = (nodeB.x || 0) - (nodeA.x || 0);
+        const dy = (nodeB.y || 0) - (nodeA.y || 0);
+        
+        let offset = 0.5;
+        if (totalLinks > 1) {
+          const step = 0.8 / totalLinks;
+          offset = 0.1 + (step / 2) + (linkIndex * step);
+        }
+
+        let exitX = 0.5, exitY = 0.5, entryX = 0.5, entryY = 0.5;
+
+        if (Math.abs(dx) > Math.abs(dy)) {
+          // Horizontal alignment
+          if (dx > 0) {
+            exitX = 1; exitY = offset; entryX = 0; entryY = offset;
+          } else {
+            exitX = 0; exitY = offset; entryX = 1; entryY = offset;
+          }
+        } else {
+          // Vertical alignment
+          if (dy > 0) {
+            exitX = offset; exitY = 1; entryX = offset; entryY = 0;
+          } else {
+            exitX = offset; exitY = 0; entryX = offset; entryY = 1;
+          }
+        }
+        
+        edge.att('style', edgeStyle + `exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
       }
 
       const formatStpPort = (port: string, role?: string, state?: string) => {
