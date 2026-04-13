@@ -1,20 +1,37 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# NetTopo Builder
 
-# Run and deploy your AI Studio app
+Sistema web completo para geração automática de topologias de rede L1, L2 e L3 no formato draw.io.
 
-This contains everything you need to run your app locally.
+## Pré-requisitos
 
-View your app in AI Studio: https://ai.studio/apps/82cd3790-2051-4db5-812d-b52b5c1a7071
+Para rodar este projeto na sua máquina, você precisará ter instalado:
+- **[Node.js](https://nodejs.org/)** (versão 18 ou superior)
 
-## Run Locally
+## Como rodar localmente
 
-**Prerequisites:**  Node.js
+1. Extraia o arquivo ZIP do projeto em uma pasta da sua preferência.
+2. Abra o terminal (ou prompt de comando) e navegue até a pasta do projeto:
+   ```bash
+   cd caminho/para/a/pasta/do/projeto
+   ```
+3. Instale todas as dependências necessárias executando:
+   ```bash
+   npm install
+   ```
+4. Inicie o servidor de desenvolvimento:
+   ```bash
+   npm run dev
+   ```
+5. Abra o seu navegador e acesse:
+   **http://localhost:3000**
 
+## Vantagem de rodar localmente
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Como o sistema utiliza conexões SSH reais para extrair os dados dos equipamentos, rodar o projeto na sua própria máquina (ou em um servidor na sua rede) permite que o NetTopo Builder acesse **IPs privados** (ex: `192.168.x.x`, `10.x.x.x`, `172.16.x.x`). 
+
+Quando hospedado na nuvem, o sistema só consegue alcançar IPs públicos.
+
+## Tecnologias Utilizadas
+- **Backend:** Node.js, Express, SSH2
+- **Frontend:** React, Tailwind CSS, Lucide Icons
+- **Processamento:** Dagre (Layout Matemático), XMLBuilder2 (Geração do Draw.io)
