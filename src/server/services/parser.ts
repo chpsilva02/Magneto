@@ -308,6 +308,17 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     const lPort = link.src_port;
     const rPort = link.dst_port;
 
+    if (!nodesMap[sDevice]) {
+      nodesMap[sDevice] = {
+        id: sDevice,
+        hostname: sDevice,
+        ip: '',
+        vendor: 'unknown' as any,
+        hardware_model: 'Unknown',
+        role: determineRole(sDevice, 'Unknown')
+      };
+    }
+
     if (!nodesMap[rDevice]) {
       nodesMap[rDevice] = {
         id: rDevice,
