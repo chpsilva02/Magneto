@@ -6,7 +6,9 @@ function buildNodeLabel(node: TopologyNode): string {
   if (node.role === 'cloud') {
     return `<b>${node.hostname}</b>`;
   }
-  let label = `<b>${node.hostname}</b><br/>(${node.ip})<br/>${node.hardware_model}`;
+  let label = `<b>${node.hostname}</b>`;
+  if (node.ip) label += `<br/>(${node.ip})`;
+  if (node.hardware_model && node.hardware_model !== 'Unknown') label += `<br/>${node.hardware_model}`;
   if (node.os_version) label += `<br/><span style="color: #666666; font-size: 10px;">OS: ${node.os_version}</span>`;
   if (node.serial_number) label += `<br/><span style="color: #666666; font-size: 10px;">SN: ${node.serial_number}</span>`;
   if (node.uptime) label += `<br/><span style="color: #666666; font-size: 10px;">Up: ${node.uptime}</span>`;
@@ -142,12 +144,31 @@ export function generateDrawioXml(topology: TopologyData): string {
     });
 
     // Add links for this layer
+    const linkCounts: Record<string, number> = {};
+    const linkIndexMap: Record<string, number> = {};
+
     layerLinks.forEach(link => {
+      const pair = [link.source, link.target].sort().join('_');
+      linkCounts[pair] = (linkCounts[pair] || 0) + 1;
+    });
+
+    layerLinks.forEach(link => {
+      const pair = [link.source, link.target].sort().join('_');
+      linkIndexMap[link.id] = linkIndexMap[pair] || 0;
+      linkIndexMap[pair] = (linkIndexMap[pair] || 0) + 1;
+      
       const edgeId = `${layer}_link_${link.id}`;
       const centerLabel = buildLinkCenterLabel(link, layer);
       
       let edgeStyle = 'endArrow=none;html=1;rounded=0;strokeWidth=2;strokeColor=#444444;labelBackgroundColor=#ffffff;fontColor=#333333;fontSize=10;';
       
+      const totalLinks = linkCounts[pair];
+      const linkIndex = linkIndexMap[link.id];
+      if (totalLinks > 1) {
+        // Add curvature to separate multiple links
+        edgeStyle += 'curved=1;';
+      }
+
       if (layer === 'L3' && link.l3_routes && link.l3_routes.length > 0) {
         let hasForward = false; // source -> target
         let hasBackward = false; // target -> source
@@ -174,7 +195,16 @@ export function generateDrawioXml(topology: TopologyData): string {
         source: `${layer}_node_${link.source}`,
         target: `${layer}_node_${link.target}`
       });
-      edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
+      
+      const geometry = edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
+
+      if (totalLinks > 1) {
+        // Add a control point to curve the line
+        // We don't have exact coordinates here easily, but Draw.io's curved=1 with exitX/Y can also work.
+        // Let's use exitX, exitY, entryX, entryY offsets
+        const offset = (linkIndex - (totalLinks - 1) / 2) * 0.2; // -0.2, 0, 0.2 etc
+        edge.att('style', edgeStyle + `exitX=${0.5 + offset};exitY=${0.5 + offset};entryX=${0.5 - offset};entryY=${0.5 - offset};`);
+      }
 
       const formatStpPort = (port: string, role?: string, state?: string) => {
         if (layer !== 'L2' || (!role && !state)) return port;

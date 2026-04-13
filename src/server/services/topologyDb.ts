@@ -140,7 +140,11 @@ export class TopologyDatabase {
           CASE WHEN source_device < target_device THEN target_device ELSE source_device END as dev_b,
           CASE WHEN source_device < target_device THEN local_port ELSE remote_port END as port_a,
           CASE WHEN source_device < target_device THEN remote_port ELSE local_port END as port_b,
-          protocol
+          protocol,
+          CASE WHEN source_device < target_device THEN NULL ELSE remote_ip END as ip_a,
+          CASE WHEN source_device < target_device THEN remote_ip ELSE NULL END as ip_b,
+          CASE WHEN source_device < target_device THEN NULL ELSE remote_model END as model_a,
+          CASE WHEN source_device < target_device THEN remote_model ELSE NULL END as model_b
         FROM physical_links
       )
       SELECT 
@@ -148,7 +152,11 @@ export class TopologyDatabase {
         dev_b as target,
         port_a as src_port,
         port_b as dst_port,
-        GROUP_CONCAT(DISTINCT protocol) as protocols
+        GROUP_CONCAT(DISTINCT protocol) as protocols,
+        MAX(ip_a) as src_ip,
+        MAX(ip_b) as dst_ip,
+        MAX(model_a) as src_model,
+        MAX(model_b) as dst_model
       FROM OrderedLinks
       GROUP BY dev_a, dev_b, port_a, port_b
     `);

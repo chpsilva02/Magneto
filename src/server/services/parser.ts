@@ -312,22 +312,34 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       nodesMap[sDevice] = {
         id: sDevice,
         hostname: sDevice,
-        ip: '',
+        ip: link.src_ip || '',
         vendor: 'unknown' as any,
-        hardware_model: 'Unknown',
-        role: determineRole(sDevice, 'Unknown')
+        hardware_model: link.src_model || 'Unknown',
+        role: determineRole(sDevice, link.src_model || 'Unknown')
       };
+    } else {
+      if (link.src_ip && !nodesMap[sDevice].ip) nodesMap[sDevice].ip = link.src_ip;
+      if (link.src_model && nodesMap[sDevice].hardware_model === 'Unknown') {
+        nodesMap[sDevice].hardware_model = link.src_model;
+        nodesMap[sDevice].role = determineRole(sDevice, link.src_model);
+      }
     }
 
     if (!nodesMap[rDevice]) {
       nodesMap[rDevice] = {
         id: rDevice,
         hostname: rDevice,
-        ip: '',
+        ip: link.dst_ip || '',
         vendor: 'unknown' as any,
-        hardware_model: 'Unknown',
-        role: determineRole(rDevice, 'Unknown')
+        hardware_model: link.dst_model || 'Unknown',
+        role: determineRole(rDevice, link.dst_model || 'Unknown')
       };
+    } else {
+      if (link.dst_ip && !nodesMap[rDevice].ip) nodesMap[rDevice].ip = link.dst_ip;
+      if (link.dst_model && nodesMap[rDevice].hardware_model === 'Unknown') {
+        nodesMap[rDevice].hardware_model = link.dst_model;
+        nodesMap[rDevice].role = determineRole(rDevice, link.dst_model);
+      }
     }
 
     const linkKey = `${sDevice}_${lPort}_${rDevice}_${rPort}`;
