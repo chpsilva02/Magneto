@@ -1,0 +1,550 @@
+import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types';
+
+function normalizePort(port: string): string {
+  let p = port.replace(/\s+/g, '');
+  if (/^gigabitethernet/i.test(p)) return p.replace(/^gigabitethernet/i, 'Gi');
+  if (/^gig/i.test(p)) return p.replace(/^gig/i, 'Gi');
+  if (/^fastethernet/i.test(p)) return p.replace(/^fastethernet/i, 'Fa');
+  if (/^fas/i.test(p)) return p.replace(/^fas/i, 'Fa');
+  if (/^tengigabitethernet/i.test(p)) return p.replace(/^tengigabitethernet/i, 'Te');
+  if (/^ten/i.test(p)) return p.replace(/^ten/i, 'Te');
+  if (/^twentyfivegige/i.test(p)) return p.replace(/^twentyfivegige/i, 'Twe');
+  if (/^fortygigabitethernet/i.test(p)) return p.replace(/^fortygigabitethernet/i, 'Fo');
+  if (/^hundredgigabitethernet/i.test(p)) return p.replace(/^hundredgigabitethernet/i, 'Hu');
+  if (/^ethernet/i.test(p)) return p.replace(/^ethernet/i, 'Eth');
+  if (/^eth/i.test(p)) return p.replace(/^eth/i, 'Eth');
+  if (/^port-channel/i.test(p)) return p.replace(/^port-channel/i, 'Po');
+  return p;
+}
+
+function determineRole(hostname: string, model: string): string {
+  const h = hostname.toLowerCase();
+  const m = model.toLowerCase();
+  
+  if (h.includes('fw') || m.includes('firewall') || m.includes('srx') || m.includes('asa') || m.includes('fpr')) return 'firewall';
+  if (h.includes('rtr') || h.includes('router') || m.includes('isr') || m.includes('asr') || m.includes('c8200') || m.includes('c1100')) return 'router';
+  if (h.includes('core') || m.includes('nexus') || m.includes('n9k') || m.includes('c9500') || m.includes('c9600')) return 'core';
+  if (h.includes('dist') || m.includes('c9400') || m.includes('c3850') || m.includes('c3750')) return 'distribution';
+  if (h.includes('sw') || m.includes('switch') || m.includes('c2960') || m.includes('c9200') || m.includes('c9300')) return 'access';
+  if (h.startsWith('sep') || m.includes('phone') || m.includes('room') || m.includes('bar') || m.includes('endpoint')) return 'endpoint';
+  
+  return 'access'; // default
+}
+
+export function parseRawData(rawData: string, vendor: string): TopologyData {
+  const nodesMap: Record<string, TopologyNode> = {};
+  const linksMap: Record<string, TopologyLink> = {};
+
+  const extractedLinks: Array<{ sourceDevice: string, remoteDevice: string, localPort: string, remotePort: string, protocol: string, remoteIp?: string, remoteModel?: string }> = [];
+  const extractedL2Links: Array<{ sourceDevice: string, localPort: string, vlan: string, role: string, state: string }> = [];
+  
+  // L3 Extraction Arrays
+  const ipToDevice: Record<string, string> = {};
+  const extractedOspf: Array<{ sourceDevice: string, neighborIp: string, localPort: string, state: string }> = [];
+  const extractedBgp: Array<{ sourceDevice: string, neighborIp: string, as: string, state: string }> = [];
+  const extractedRoutes: Array<{ sourceDevice: string, code: string, prefix: string, nextHop: string, localPort: string }> = [];
+
+  function parseBlock(hostname: string, blockData: string) {
+    if (!nodesMap[hostname]) {
+      nodesMap[hostname] = {
+        id: hostname,
+        hostname: hostname,
+        ip: '',
+        vendor: vendor as any,
+        hardware_model: 'Unknown',
+        role: determineRole(hostname, 'Unknown')
+      };
+    }
+
+    const hwMatch = blockData.match(/(?:cisco|hardware|model)\s+(WS-C\w+|C\d+|Nexus\s+\d+|ISR\d+|ASR\d+|FPR\d+|SRX\d+)/i);
+    if (hwMatch && hwMatch[1] && nodesMap[hostname].hardware_model === 'Unknown') {
+      nodesMap[hostname].hardware_model = hwMatch[1];
+      nodesMap[hostname].role = determineRole(hostname, hwMatch[1]);
+    }
+
+    // --- PARSE CDP DETAIL ---
+    const cdpBlocks = blockData.split(/Device ID:/i).slice(1);
+    for (const block of cdpBlocks) {
+      const deviceIdMatch = block.match(/^\s*([^\r\n]+)/);
+      const interfaceMatch = block.match(/Interface:\s*([^,]+),\s*Port ID \(outgoing port\):\s*([^\r\n]+)/i);
+      const ipMatch = block.match(/IP address:\s*([0-9.]+)/i);
+      const platformMatch = block.match(/Platform:\s*([^,]+)/i);
+
+      if (deviceIdMatch && interfaceMatch) {
+        let remoteDevice = deviceIdMatch[1].trim().split('.')[0];
+        let localPort = normalizePort(interfaceMatch[1].trim());
+        let remotePort = normalizePort(interfaceMatch[2].trim());
+        
+        extractedLinks.push({
+          sourceDevice: hostname,
+          remoteDevice,
+          localPort,
+          remotePort,
+          protocol: 'cdp',
+          remoteIp: ipMatch ? ipMatch[1].trim() : undefined,
+          remoteModel: platformMatch ? platformMatch[1].trim() : undefined
+        });
+      }
+    }
+
+    // --- PARSE LLDP DETAIL ---
+    const lldpBlocks = blockData.split(/Local Intf:/i).slice(1);
+    for (const block of lldpBlocks) {
+      const localIntfMatch = block.match(/^\s*([^\r\n]+)/);
+      const sysNameMatch = block.match(/System Name:\s*([^\r\n]+)/i);
+      const portIdMatch = block.match(/Port id:\s*([^\r\n]+)/i);
+      const ipMatch = block.match(/Management address:\s*([0-9.]+)/i) || block.match(/IP:\s*([0-9.]+)/i);
+
+      if (localIntfMatch && sysNameMatch && portIdMatch) {
+        let remoteDevice = sysNameMatch[1].trim().split('.')[0];
+        let localPort = normalizePort(localIntfMatch[1].trim());
+        let remotePort = normalizePort(portIdMatch[1].trim());
+
+        extractedLinks.push({
+          sourceDevice: hostname,
+          remoteDevice,
+          localPort,
+          remotePort,
+          protocol: 'lldp',
+          remoteIp: ipMatch ? ipMatch[1].trim() : undefined
+        });
+      }
+    }
+
+    // --- PARSE TABULAR CDP/LLDP ---
+    const lines = blockData.split('\n');
+    let inTable = false;
+    let pendingDevice = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Detect start of table
+      if (line.match(/^(Device ID|System Name|Local Intf)/i)) {
+        inTable = true;
+        pendingDevice = '';
+        continue;
+      }
+      
+      // Detect end of table
+      if (inTable && (line === '' || line.match(/^[a-zA-Z0-9_.-]+[#>]/))) {
+        inTable = false;
+        continue;
+      }
+
+      if (!inTable) continue;
+      if (line.startsWith('Capability') || line.startsWith('Port ID')) continue;
+      
+      // Strict regex for local interface to avoid matching VLANs or MAC addresses
+      const intfRegex = /(?:^|\s)(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Port-channel)\s*([\d\/\.]+)\s+\d+\s+.*?\s+([A-Za-z]*\s*[\d\/\.]+|eth\d+|mgmt\d+|\S+)$/i;
+      const match = line.match(intfRegex);
+      
+      if (match) {
+        let remoteDevice = '';
+        const firstToken = line.split(/\s+/)[0];
+        const localPortFull = match[1] + match[2];
+        const remotePortFull = match[3];
+        
+        const isInterface = /^(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Port-channel)/i.test(firstToken);
+        
+        if (isInterface) {
+          remoteDevice = pendingDevice;
+        } else {
+          remoteDevice = firstToken;
+        }
+        
+        if (remoteDevice) {
+          remoteDevice = remoteDevice.split('.')[0];
+          let localPort = normalizePort(localPortFull);
+          let remotePort = normalizePort(remotePortFull);
+          
+          const exists = extractedLinks.some(l => l.sourceDevice === hostname && l.remoteDevice === remoteDevice && l.localPort === localPort && l.remotePort === remotePort);
+          if (!exists) {
+            extractedLinks.push({
+              sourceDevice: hostname,
+              remoteDevice,
+              localPort,
+              remotePort,
+              protocol: 'cdp/lldp'
+            });
+          }
+        }
+        pendingDevice = '';
+      } else {
+        if (line.split(/\s+/).length === 1) {
+          pendingDevice = line;
+        }
+      }
+    }
+
+    // --- PARSE SPANNING TREE (L2 TOPOLOGY) ---
+    const stpBlocks = blockData.split(/(?=VLAN\s*\d+|Spanning tree instance)/i);
+    for (const block of stpBlocks) {
+      if (/This bridge is the root/i.test(block)) {
+        nodesMap[hostname].isRoot = true;
+      }
+      
+      const vlanMatch = block.match(/(?:VLAN|Spanning tree instance)\s*0*(\d+)/i);
+      const vlanId = vlanMatch ? vlanMatch[1] : null;
+
+      if (vlanId) {
+        const portRegex = /^([A-Za-z0-9\/\.-]+)\s+(Root|Desg|Altn|Back|Mstr|Shr|None)\s+(FWD|BLK|LRN|LIS|BKN|DIS)\s+(\d+)/gm;
+        let portMatch;
+        while ((portMatch = portRegex.exec(block)) !== null) {
+          extractedL2Links.push({
+            sourceDevice: hostname,
+            localPort: normalizePort(portMatch[1]),
+            vlan: vlanId,
+            role: portMatch[2],
+            state: portMatch[3]
+          });
+        }
+      }
+    }
+
+    // --- PARSE L3 (ROUTING & NEIGHBORS) ---
+    let currentRouteCode = '';
+    let currentPrefix = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // IP to Device mapping from interfaces
+      const intfIpMatch = line.match(/Internet address is ([0-9\.]+)\/\d+/i);
+      if (intfIpMatch) ipToDevice[intfIpMatch[1]] = hostname;
+
+      // OSPF Neighbor
+      const ospfMatch = line.match(/^([0-9\.]+)\s+\d+\s+(FULL|2WAY|INIT|EXSTART|EXCHANGE|LOADING)[^\s]*\s+[0-9\:]+\s+([0-9\.]+)\s+([A-Za-z0-9\/\.-]+)/i);
+      if (ospfMatch) {
+        extractedOspf.push({
+          sourceDevice: hostname,
+          neighborIp: ospfMatch[3],
+          localPort: normalizePort(ospfMatch[4]),
+          state: ospfMatch[2]
+        });
+        ipToDevice[ospfMatch[1]] = ospfMatch[3]; // Map Router ID to Interface IP for resolution
+      }
+
+      // BGP Neighbor
+      const bgpMatch = line.match(/^([0-9\.]+)\s+\d+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+([0-9a-zA-Z]+)/i);
+      if (bgpMatch) {
+        extractedBgp.push({
+          sourceDevice: hostname,
+          neighborIp: bgpMatch[1],
+          as: bgpMatch[2],
+          state: bgpMatch[3]
+        });
+      }
+
+      // Routing Table
+      const localRouteMatch = line.match(/^L\s+([0-9\.]+)\/32\s+is directly connected/i);
+      if (localRouteMatch) ipToDevice[localRouteMatch[1]] = hostname;
+
+      const routeHeaderMatch = line.match(/^([A-Za-z\*]{1,4})\s+([0-9\.\/]+)/);
+      if (routeHeaderMatch && !line.includes('via') && !line.includes('connected')) {
+        currentRouteCode = routeHeaderMatch[1].trim();
+        currentPrefix = routeHeaderMatch[2].trim();
+      }
+
+      const viaMatch = line.match(/via\s+([0-9\.]+)(?:,\s*[0-9\:]+)?(?:,\s*([A-Za-z0-9\/\.-]+))?/i);
+      if (viaMatch) {
+        let code = currentRouteCode;
+        let prefix = currentPrefix;
+        if (routeHeaderMatch) {
+          code = routeHeaderMatch[1].trim();
+          prefix = routeHeaderMatch[2].trim();
+        }
+        if (code) {
+          const nextHop = viaMatch[1];
+          const localPort = viaMatch[2] ? normalizePort(viaMatch[2]) : '';
+          
+          extractedRoutes.push({
+            sourceDevice: hostname,
+            code: code,
+            prefix: prefix,
+            nextHop: nextHop,
+            localPort: localPort
+          });
+
+          if (!nodesMap[hostname].routes) nodesMap[hostname].routes = [];
+          nodesMap[hostname].routes.push({
+            destination: prefix,
+            nextHop: nextHop,
+            interface: localPort,
+            protocol: code
+          });
+        }
+      }
+    }
+  }
+
+  const parts = rawData.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
+  if (parts.length === 1) {
+    parseBlock('Unknown-Device', rawData);
+  } else {
+    for (let i = 1; i < parts.length; i += 2) {
+      const hostname = parts[i].split('.')[0]; // Strip domain to match CDP
+      const blockData = parts[i+1];
+      parseBlock(hostname, blockData);
+    }
+  }
+
+  // --- DEDUPLICATE AND BUILD TOPOLOGY ---
+  let linkIdCounter = 1;
+  
+  for (const link of extractedLinks) {
+    const sDevice = link.sourceDevice;
+    const rDevice = link.remoteDevice;
+    const lPort = link.localPort;
+    const rPort = link.remotePort;
+
+    if (!nodesMap[rDevice]) {
+      nodesMap[rDevice] = {
+        id: rDevice,
+        hostname: rDevice,
+        ip: link.remoteIp || '',
+        vendor: 'unknown' as any,
+        hardware_model: link.remoteModel || 'Unknown',
+        role: determineRole(rDevice, link.remoteModel || 'Unknown')
+      };
+    } else {
+      if (link.remoteIp && !nodesMap[rDevice].ip) nodesMap[rDevice].ip = link.remoteIp;
+      if (link.remoteModel && nodesMap[rDevice].hardware_model === 'Unknown') {
+        nodesMap[rDevice].hardware_model = link.remoteModel;
+        nodesMap[rDevice].role = determineRole(rDevice, link.remoteModel);
+      }
+    }
+
+    const devices = [sDevice, rDevice].sort();
+    const ports = sDevice < rDevice ? [lPort, rPort] : [rPort, lPort];
+    const linkKey = `${devices[0]}_${ports[0]}_${devices[1]}_${ports[1]}`;
+    
+    if (!linksMap[linkKey]) {
+      linksMap[linkKey] = {
+        id: `l1_${linkIdCounter++}`,
+        source: sDevice,
+        target: rDevice,
+        src_port: lPort,
+        dst_port: rPort,
+        layer: 'L1',
+        protocol: link.protocol
+      };
+    } else {
+      if (!linksMap[linkKey].protocol.includes(link.protocol)) {
+        linksMap[linkKey].protocol += `/${link.protocol}`;
+      }
+    }
+  }
+
+  // Add L2 Links based on STP and L1 adjacency
+  const l2ByPort: Record<string, { sourceDevice: string, localPort: string, vlan: string, role: string, state: string }> = {};
+  for (const l2 of extractedL2Links) {
+    const key = `${l2.sourceDevice}_${l2.localPort}`;
+    if (!l2ByPort[key]) {
+      l2ByPort[key] = l2;
+    } else if (l2ByPort[key].state !== l2.state) {
+      l2ByPort[key].state = 'Mixed';
+    }
+  }
+
+  for (const [key, l2] of Object.entries(l2ByPort)) {
+    const l1Link = extractedLinks.find(l => l.sourceDevice === l2.sourceDevice && l.localPort === l2.localPort);
+    
+    if (!l1Link) continue;
+
+    const sDevice = l1Link.sourceDevice;
+    const rDevice = l1Link.remoteDevice;
+    const lPort = l1Link.localPort;
+    const rPort = l1Link.remotePort;
+
+    const devices = [sDevice, rDevice].sort();
+    const ports = sDevice < rDevice ? [lPort, rPort] : [rPort, lPort];
+    const linkKey = `L2_${devices[0]}_${ports[0]}_${devices[1]}_${ports[1]}`;
+    
+    if (!linksMap[linkKey]) {
+      linksMap[linkKey] = {
+        id: `l2_${linkIdCounter++}`,
+        source: devices[0],
+        target: devices[1],
+        src_port: ports[0],
+        dst_port: ports[1],
+        layer: 'L2',
+        protocol: 'stp',
+        vlan: l2.vlan
+      };
+    }
+    
+    if (linksMap[linkKey].source === l2.sourceDevice) {
+       linksMap[linkKey].src_stp_role = l2.role;
+       linksMap[linkKey].src_stp_state = l2.state;
+    } else {
+       linksMap[linkKey].dst_stp_role = l2.role;
+       linksMap[linkKey].dst_stp_state = l2.state;
+    }
+  }
+
+  // --- BUILD L3 TOPOLOGY ---
+  const l3LinksMap: Record<string, TopologyLink> = {};
+
+  function getL3Link(source: string, targetIp: string): TopologyLink | null {
+    const targetDevice = ipToDevice[targetIp] || targetIp;
+    if (source === targetDevice) return null; // Ignore self links
+
+    if (!nodesMap[source]) {
+      nodesMap[source] = {
+        id: source,
+        hostname: source,
+        ip: '',
+        vendor: 'unknown',
+        hardware_model: 'Unknown',
+        role: 'unknown'
+      };
+    }
+
+    if (!nodesMap[targetDevice]) {
+      nodesMap[targetDevice] = {
+        id: targetDevice,
+        hostname: targetDevice,
+        ip: targetIp,
+        vendor: 'unknown',
+        hardware_model: 'Unknown',
+        role: 'router'
+      };
+    }
+
+    const devices = [source, targetDevice].sort();
+    const linkKey = `L3_${devices[0]}_${devices[1]}`;
+
+    if (!l3LinksMap[linkKey]) {
+      l3LinksMap[linkKey] = {
+        id: `l3_${linkIdCounter++}`,
+        source: devices[0],
+        target: devices[1],
+        src_port: '',
+        dst_port: '',
+        layer: 'L3',
+        protocol: 'connected',
+        l3_routes: []
+      };
+    }
+    
+    const link = l3LinksMap[linkKey];
+    if (devices[0] === targetDevice && !link.src_ip) {
+      link.src_ip = targetIp;
+    } else if (devices[1] === targetDevice && !link.dst_ip) {
+      link.dst_ip = targetIp;
+    }
+    
+    return link;
+  }
+
+  for (const ospf of extractedOspf) {
+    const link = getL3Link(ospf.sourceDevice, ospf.neighborIp);
+    if (link) {
+      link.protocol = 'ospf';
+      if (link.source === ospf.sourceDevice) link.src_port = ospf.localPort;
+      else link.dst_port = ospf.localPort;
+      link.state = ospf.state;
+    }
+  }
+
+  for (const bgp of extractedBgp) {
+    const link = getL3Link(bgp.sourceDevice, bgp.neighborIp);
+    if (link) {
+      link.protocol = 'bgp';
+      link.routing_as = `AS ${bgp.as}`;
+      link.state = bgp.state;
+    }
+  }
+
+  for (const route of extractedRoutes) {
+    let proto = 'unknown';
+    const code = route.code.replace('*', '').trim();
+    if (code.startsWith('O')) proto = 'ospf';
+    else if (code.startsWith('B')) proto = 'bgp';
+    else if (code.startsWith('D')) proto = 'eigrp';
+    else if (code.startsWith('S')) proto = 'static';
+    else if (code.startsWith('i')) proto = 'isis';
+    else continue;
+
+    const link = getL3Link(route.sourceDevice, route.nextHop);
+    if (link) {
+      if (link.protocol === 'connected' || link.protocol === 'unknown') {
+        link.protocol = proto as any;
+      }
+      if (route.localPort) {
+        if (link.source === route.sourceDevice && !link.src_port) link.src_port = route.localPort;
+        if (link.target === route.sourceDevice && !link.dst_port) link.dst_port = route.localPort;
+      }
+
+      if (route.prefix && route.prefix !== '0.0.0.0/0') {
+        if (!link.l3_routes) link.l3_routes = [];
+        const exists = link.l3_routes.find(r => r.source === route.sourceDevice && r.prefix === route.prefix && r.protocol === proto);
+        if (!exists) {
+          link.l3_routes.push({
+            source: route.sourceDevice,
+            target: link.source === route.sourceDevice ? link.target : link.source,
+            protocol: proto,
+            prefix: route.prefix
+          });
+        }
+      }
+    }
+  }
+
+  for (const link of Object.values(l3LinksMap)) {
+    if (!nodesMap[link.target]) {
+      nodesMap[link.target] = {
+        id: link.target,
+        hostname: link.target,
+        ip: link.dst_ip || '',
+        vendor: 'unknown',
+        hardware_model: 'Unknown L3 Node',
+        role: 'router'
+      };
+    }
+    linksMap[link.id] = link;
+  }
+
+  let nodes = Object.values(nodesMap);
+  let links = Object.values(linksMap);
+
+  // Fallback to mock data if no neighbors were parsed
+  if (links.length === 0) {
+    nodes = [
+      { 
+        id: 'acc_sw2', hostname: 'Acc-SW2', ip: '10.0.0.3', vendor: vendor as any, hardware_model: 'WS-C2960X', role: 'access',
+        x: 150, y: 350
+      },
+      { 
+        id: 'dist_sw1', hostname: 'Dist-SW1', ip: '10.0.0.2', vendor: vendor as any, hardware_model: 'Nexus 9000', role: 'distribution',
+        x: 450, y: 550
+      },
+      { 
+        id: 'vit_swc', hostname: 'VIT_PIN_SWC_3850_01', ip: '10.0.0.1', vendor: vendor as any, hardware_model: 'WS-C3750X', role: 'core',
+        x: 750, y: 350
+      },
+      { 
+        id: 'edge_fw1', hostname: 'Edge-FW1', ip: '10.0.0.254', vendor: vendor as any, hardware_model: 'SRX300', role: 'firewall',
+        x: 750, y: 100
+      },
+    ];
+
+    links = [
+      // L1 Links (Physical)
+      { id: 'l1_1', source: 'acc_sw2', target: 'vit_swc', src_port: 'Eth1/2', dst_port: 'Gi1/0/1', layer: 'L1', protocol: 'lldp' },
+      { id: 'l1_2', source: 'dist_sw1', target: 'vit_swc', src_port: 'Eth1/1', dst_port: 'Gi0/0/1', layer: 'L1', protocol: 'lldp' },
+      { id: 'l1_3', source: 'vit_swc', target: 'edge_fw1', src_port: 'ge-0/0/0', dst_port: 'Gi0/0/2', layer: 'L1', protocol: 'lldp' },
+      
+      // L2 Links (Logical)
+      { id: 'l2_1', source: 'acc_sw2', target: 'vit_swc', src_port: 'Po1', dst_port: 'Po1', layer: 'L2', protocol: 'stp', vlan: 'Trunk (10,20,30)', src_stp_state: 'FWD', src_stp_role: 'Root', dst_stp_state: 'FWD', dst_stp_role: 'Desg', port_channel: 'Po1' },
+      { id: 'l2_2', source: 'dist_sw1', target: 'vit_swc', src_port: 'Po2', dst_port: 'Po2', layer: 'L2', protocol: 'stp', vlan: 'Trunk (10,20,30)', src_stp_state: 'FWD', src_stp_role: 'Desg', dst_stp_state: 'FWD', dst_stp_role: 'Root', port_channel: 'Po2' },
+      
+      // L3 Links (Routing)
+      { id: 'l3_1', source: 'dist_sw1', target: 'vit_swc', src_port: 'Vlan10', dst_port: 'Vlan10', layer: 'L3', protocol: 'ospf', src_ip: '10.0.10.1', dst_ip: '10.0.10.2', subnet: '/24', routing_area: 'Area 0', metric: '10' },
+      { id: 'l3_2', source: 'vit_swc', target: 'edge_fw1', src_port: '10.0.254.1', dst_port: '10.0.254.2', layer: 'L3', protocol: 'bgp', src_ip: '10.0.254.1', dst_ip: '10.0.254.2', subnet: '/30', routing_as: 'AS 65001', metric: '0' },
+    ];
+  }
+
+  return { nodes, links };
+}
