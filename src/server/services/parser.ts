@@ -1,4 +1,5 @@
 import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
+import { TopologyDatabase } from './topologyDb.ts';
 
 function normalizePort(port: string): string {
   let p = port.replace(/\s+/g, '');
@@ -17,7 +18,7 @@ function normalizePort(port: string): string {
   return p;
 }
 
-function determineRole(hostname: string, model: string): string {
+function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'distribution' | 'access' | 'router' | 'firewall' | 'cloud' {
   const h = hostname.toLowerCase();
   const m = model.toLowerCase();
   
@@ -26,16 +27,17 @@ function determineRole(hostname: string, model: string): string {
   if (h.includes('core') || m.includes('nexus') || m.includes('n9k') || m.includes('c9500') || m.includes('c9600')) return 'core';
   if (h.includes('dist') || m.includes('c9400') || m.includes('c3850') || m.includes('c3750')) return 'distribution';
   if (h.includes('sw') || m.includes('switch') || m.includes('c2960') || m.includes('c9200') || m.includes('c9300')) return 'access';
-  if (h.startsWith('sep') || m.includes('phone') || m.includes('room') || m.includes('bar') || m.includes('endpoint')) return 'endpoint';
+  if (h.startsWith('sep') || m.includes('phone') || m.includes('room') || m.includes('bar') || m.includes('endpoint')) return 'access';
   
   return 'access'; // default
 }
 
 export function parseRawData(rawData: string, vendor: string): TopologyData {
+  const db = new TopologyDatabase();
+  
   const nodesMap: Record<string, TopologyNode> = {};
   const linksMap: Record<string, TopologyLink> = {};
 
-  const extractedLinks: Array<{ sourceDevice: string, remoteDevice: string, localPort: string, remotePort: string, protocol: string, remoteIp?: string, remoteModel?: string }> = [];
   const extractedL2Links: Array<{ sourceDevice: string, localPort: string, vlan: string, role: string, state: string }> = [];
   
   // L3 Extraction Arrays
@@ -45,22 +47,19 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   const extractedRoutes: Array<{ sourceDevice: string, code: string, prefix: string, nextHop: string, localPort: string }> = [];
 
   function parseBlock(hostname: string, blockData: string) {
-    if (!nodesMap[hostname]) {
-      nodesMap[hostname] = {
-        id: hostname,
-        hostname: hostname,
-        ip: '',
-        vendor: vendor as any,
-        hardware_model: 'Unknown',
-        role: determineRole(hostname, 'Unknown')
-      };
-    }
-
+    let hwModel = 'Unknown';
     const hwMatch = blockData.match(/(?:cisco|hardware|model)\s+(WS-C\w+|C\d+|Nexus\s+\d+|ISR\d+|ASR\d+|FPR\d+|SRX\d+)/i);
-    if (hwMatch && hwMatch[1] && nodesMap[hostname].hardware_model === 'Unknown') {
-      nodesMap[hostname].hardware_model = hwMatch[1];
-      nodesMap[hostname].role = determineRole(hostname, hwMatch[1]);
+    if (hwMatch && hwMatch[1]) {
+      hwModel = hwMatch[1];
     }
+    
+    db.upsertDevice({
+      id: hostname,
+      hostname: hostname,
+      vendor: vendor as any,
+      hardware_model: hwModel,
+      role: determineRole(hostname, hwModel)
+    });
 
     // --- PARSE CDP DETAIL ---
     const cdpBlocks = blockData.split(/Device ID:/i).slice(1);
@@ -75,15 +74,15 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
-        extractedLinks.push({
-          sourceDevice: hostname,
-          remoteDevice,
+        db.insertPhysicalLink(
+          hostname,
           localPort,
+          remoteDevice,
           remotePort,
-          protocol: 'cdp',
-          remoteIp: ipMatch ? ipMatch[1].trim() : undefined,
-          remoteModel: platformMatch ? platformMatch[1].trim() : undefined
-        });
+          'cdp',
+          ipMatch ? ipMatch[1].trim() : undefined,
+          platformMatch ? platformMatch[1].trim() : undefined
+        );
       }
     }
 
@@ -100,14 +99,14 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(localIntfMatch[1].trim());
         let remotePort = normalizePort(portIdMatch[1].trim());
 
-        extractedLinks.push({
-          sourceDevice: hostname,
-          remoteDevice,
+        db.insertPhysicalLink(
+          hostname,
           localPort,
+          remoteDevice,
           remotePort,
-          protocol: 'lldp',
-          remoteIp: ipMatch ? ipMatch[1].trim() : undefined
-        });
+          'lldp',
+          ipMatch ? ipMatch[1].trim() : undefined
+        );
       }
     }
 
@@ -158,16 +157,13 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
           let localPort = normalizePort(localPortFull);
           let remotePort = normalizePort(remotePortFull);
           
-          const exists = extractedLinks.some(l => l.sourceDevice === hostname && l.remoteDevice === remoteDevice && l.localPort === localPort && l.remotePort === remotePort);
-          if (!exists) {
-            extractedLinks.push({
-              sourceDevice: hostname,
-              remoteDevice,
-              localPort,
-              remotePort,
-              protocol: 'cdp/lldp'
-            });
-          }
+          db.insertPhysicalLink(
+            hostname,
+            localPort,
+            remoteDevice,
+            remotePort,
+            'cdp/lldp'
+          );
         }
         pendingDevice = '';
       } else {
@@ -292,48 +288,42 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   // --- DEDUPLICATE AND BUILD TOPOLOGY ---
   let linkIdCounter = 1;
   
-  for (const link of extractedLinks) {
-    const sDevice = link.sourceDevice;
-    const rDevice = link.remoteDevice;
-    const lPort = link.localPort;
-    const rPort = link.remotePort;
+  // Populate nodes from DB
+  const dbDevices = db.getDevices();
+  for (const dev of dbDevices) {
+    nodesMap[dev.id] = dev;
+  }
+
+  const physicalLinks = db.getDeduplicatedPhysicalLinks();
+  
+  for (const link of physicalLinks) {
+    const sDevice = link.source;
+    const rDevice = link.target;
+    const lPort = link.src_port;
+    const rPort = link.dst_port;
 
     if (!nodesMap[rDevice]) {
       nodesMap[rDevice] = {
         id: rDevice,
         hostname: rDevice,
-        ip: link.remoteIp || '',
+        ip: '',
         vendor: 'unknown' as any,
-        hardware_model: link.remoteModel || 'Unknown',
-        role: determineRole(rDevice, link.remoteModel || 'Unknown')
+        hardware_model: 'Unknown',
+        role: determineRole(rDevice, 'Unknown')
       };
-    } else {
-      if (link.remoteIp && !nodesMap[rDevice].ip) nodesMap[rDevice].ip = link.remoteIp;
-      if (link.remoteModel && nodesMap[rDevice].hardware_model === 'Unknown') {
-        nodesMap[rDevice].hardware_model = link.remoteModel;
-        nodesMap[rDevice].role = determineRole(rDevice, link.remoteModel);
-      }
     }
 
-    const devices = [sDevice, rDevice].sort();
-    const ports = sDevice < rDevice ? [lPort, rPort] : [rPort, lPort];
-    const linkKey = `${devices[0]}_${ports[0]}_${devices[1]}_${ports[1]}`;
+    const linkKey = `${sDevice}_${lPort}_${rDevice}_${rPort}`;
     
-    if (!linksMap[linkKey]) {
-      linksMap[linkKey] = {
-        id: `l1_${linkIdCounter++}`,
-        source: sDevice,
-        target: rDevice,
-        src_port: lPort,
-        dst_port: rPort,
-        layer: 'L1',
-        protocol: link.protocol
-      };
-    } else {
-      if (!linksMap[linkKey].protocol.includes(link.protocol)) {
-        linksMap[linkKey].protocol += `/${link.protocol}`;
-      }
-    }
+    linksMap[linkKey] = {
+      id: `l1_${linkIdCounter++}`,
+      source: sDevice,
+      target: rDevice,
+      src_port: lPort,
+      dst_port: rPort,
+      layer: 'L1',
+      protocol: link.protocols
+    };
   }
 
   // Add L2 Links based on STP and L1 adjacency
@@ -348,14 +338,19 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   }
 
   for (const [key, l2] of Object.entries(l2ByPort)) {
-    const l1Link = extractedLinks.find(l => l.sourceDevice === l2.sourceDevice && l.localPort === l2.localPort);
+    // Find the corresponding L1 link in the DB
+    // We need to check both directions because the DB deduplicates
+    const l1Link = physicalLinks.find(l => 
+      (l.source === l2.sourceDevice && l.src_port === l2.localPort) ||
+      (l.target === l2.sourceDevice && l.dst_port === l2.localPort)
+    );
     
     if (!l1Link) continue;
 
-    const sDevice = l1Link.sourceDevice;
-    const rDevice = l1Link.remoteDevice;
-    const lPort = l1Link.localPort;
-    const rPort = l1Link.remotePort;
+    const sDevice = l1Link.source;
+    const rDevice = l1Link.target;
+    const lPort = l1Link.src_port;
+    const rPort = l1Link.dst_port;
 
     const devices = [sDevice, rDevice].sort();
     const ports = sDevice < rDevice ? [lPort, rPort] : [rPort, lPort];
