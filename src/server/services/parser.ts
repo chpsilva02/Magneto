@@ -53,12 +53,15 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       hwModel = hwMatch[1];
     }
     
+    const isRoot = /This bridge is the root/i.test(blockData);
+
     db.upsertDevice({
       id: hostname,
       hostname: hostname,
       vendor: vendor as any,
       hardware_model: hwModel,
-      role: determineRole(hostname, hwModel)
+      role: determineRole(hostname, hwModel),
+      isRoot: isRoot
     });
 
     // --- PARSE CDP DETAIL ---
@@ -176,10 +179,6 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     // --- PARSE SPANNING TREE (L2 TOPOLOGY) ---
     const stpBlocks = blockData.split(/(?=VLAN\s*\d+|Spanning tree instance)/i);
     for (const block of stpBlocks) {
-      if (/This bridge is the root/i.test(block)) {
-        nodesMap[hostname].isRoot = true;
-      }
-      
       const vlanMatch = block.match(/(?:VLAN|Spanning tree instance)\s*0*(\d+)/i);
       const vlanId = vlanMatch ? vlanMatch[1] : null;
 
@@ -261,14 +260,6 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
             nextHop: nextHop,
             localPort: localPort
           });
-
-          if (!nodesMap[hostname].routes) nodesMap[hostname].routes = [];
-          nodesMap[hostname].routes.push({
-            destination: prefix,
-            nextHop: nextHop,
-            interface: localPort,
-            protocol: code
-          });
         }
       }
     }
@@ -292,6 +283,21 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   const dbDevices = db.getDevices();
   for (const dev of dbDevices) {
     nodesMap[dev.id] = dev;
+  }
+
+  // Populate routes into nodesMap
+  for (const route of extractedRoutes) {
+    if (nodesMap[route.sourceDevice]) {
+      if (!nodesMap[route.sourceDevice].routes) {
+        nodesMap[route.sourceDevice].routes = [];
+      }
+      nodesMap[route.sourceDevice].routes.push({
+        destination: route.prefix,
+        nextHop: route.nextHop,
+        interface: route.localPort,
+        protocol: route.code
+      });
+    }
   }
 
   const physicalLinks = db.getDeduplicatedPhysicalLinks();
