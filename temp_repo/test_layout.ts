@@ -1,5 +1,5 @@
-import { applyLayout } from './src/server/services/layout.ts';
-import { TopologyData } from './src/shared/types.ts';
+import { applyLayout } from './src/server/services/layout';
+import { TopologyData } from './src/shared/types';
 
 const data: TopologyData = {
   nodes: [
