@@ -1,4 +1,4 @@
-# NetTopo Builder
+# Magneto
 
 Sistema web completo para geração automática de topologias de rede L1, L2 e L3 no formato draw.io.
 
