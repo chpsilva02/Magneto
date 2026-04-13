@@ -161,7 +161,7 @@ export function generateDrawioXml(topology: TopologyData): string {
       const edgeId = `${layer}_link_${link.id}`;
       const centerLabel = buildLinkCenterLabel(link, layer);
       
-      let edgeStyle = 'endArrow=none;html=1;rounded=0;strokeWidth=2;strokeColor=#444444;labelBackgroundColor=#ffffff;fontColor=#333333;fontSize=10;';
+      let edgeStyle = 'endArrow=none;html=1;rounded=1;strokeWidth=2;strokeColor=#444444;labelBackgroundColor=#ffffff;fontColor=#333333;fontSize=10;';
       
       const totalLinks = linkCounts[pair];
       const linkIndex = linkIndexMap[link.id];
@@ -230,8 +230,8 @@ export function generateDrawioXml(topology: TopologyData): string {
           }
         }
         
-        // Use orthogonal edge style to force straight lines that don't overlap in the middle
-        edge.att('style', edgeStyle + `edgeStyle=orthogonalEdgeStyle;exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
+        // Use straight lines that don't overlap by specifying exact exit/entry points
+        edge.att('style', edgeStyle + `exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
       }
 
       const formatStpPort = (port: string, role?: string, state?: string) => {

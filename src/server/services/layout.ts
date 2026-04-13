@@ -1,5 +1,17 @@
 import * as d3 from 'd3-force';
-import { TopologyData } from '../../shared/types.ts';
+import { TopologyData, TopologyNode } from '../../shared/types.ts';
+
+function getRoleLevel(role: string): number {
+  switch (role) {
+    case 'cloud': return 0;
+    case 'firewall': return 1;
+    case 'router': return 1;
+    case 'core': return 2;
+    case 'distribution': return 3;
+    case 'access': return 4;
+    default: return 5;
+  }
+}
 
 export function applyLayout(topology: TopologyData): TopologyData {
   // Check if all nodes already have x and y defined (fixed layout)
@@ -19,10 +31,14 @@ export function applyLayout(topology: TopologyData): TopologyData {
 
   // Setup d3 force simulation (spring_layout equivalent)
   const simulation = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-    .force('link', d3.forceLink(links).id((d: any) => d.id).distance(200))
-    .force('charge', d3.forceManyBody().strength(-1500)) // repel each other strongly
-    .force('center', d3.forceCenter(500, 500))
-    .force('collide', d3.forceCollide().radius(100)) // prevent overlap
+    .force('link', d3.forceLink(links).id((d: any) => d.id).distance(150))
+    .force('charge', d3.forceManyBody().strength(-3000)) // repel each other strongly
+    .force('y', d3.forceY((d: any) => {
+      const level = getRoleLevel(d.role);
+      return 150 + level * 250;
+    }).strength(1.5)) // Strong vertical constraint based on role
+    .force('x', d3.forceX(600).strength(0.1)) // Weak horizontal centering
+    .force('collide', d3.forceCollide().radius(120)) // prevent overlap
     .stop();
 
   // Run simulation synchronously to calculate positions mathematically
