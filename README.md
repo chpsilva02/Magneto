@@ -1,4 +1,4 @@
-# NetTopo Builder
+# Magneto
 
 Sistema web completo para geração automática de topologias de rede L1, L2 e L3 no formato draw.io.
 
@@ -27,7 +27,7 @@ Para rodar este projeto na sua máquina, você precisará ter instalado:
 
 ## Vantagem de rodar localmente
 
-Como o sistema utiliza conexões SSH reais para extrair os dados dos equipamentos, rodar o projeto na sua própria máquina (ou em um servidor na sua rede) permite que o NetTopo Builder acesse **IPs privados** (ex: `192.168.x.x`, `10.x.x.x`, `172.16.x.x`). 
+Como o sistema utiliza conexões SSH reais para extrair os dados dos equipamentos, rodar o projeto na sua própria máquina (ou em um servidor na sua rede) permite que o Magneto acesse **IPs privados** (ex: `192.168.x.x`, `10.x.x.x`, `172.16.x.x`). 
 
 Quando hospedado na nuvem, o sistema só consegue alcançar IPs públicos.
 
