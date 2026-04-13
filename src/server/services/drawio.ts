@@ -198,8 +198,13 @@ export function generateDrawioXml(topology: TopologyData): string {
       const nodeA = nodeMap.get(link.source);
       const nodeB = nodeMap.get(link.target);
       if (nodeA && nodeB) {
-        const dx = (nodeB.x || 0) - (nodeA.x || 0);
-        const dy = (nodeB.y || 0) - (nodeA.y || 0);
+        const ax = nodeA.x || 0;
+        const ay = nodeA.y || 0;
+        const bx = nodeB.x || 0;
+        const by = nodeB.y || 0;
+        
+        const dx = bx - ax;
+        const dy = by - ay;
         
         let offset = 0.5;
         if (totalLinks > 1) {
@@ -225,7 +230,8 @@ export function generateDrawioXml(topology: TopologyData): string {
           }
         }
         
-        edge.att('style', edgeStyle + `exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
+        // Use orthogonal edge style to force straight lines that don't overlap in the middle
+        edge.att('style', edgeStyle + `edgeStyle=orthogonalEdgeStyle;exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
       }
 
       const formatStpPort = (port: string, role?: string, state?: string) => {
