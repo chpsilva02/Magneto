@@ -51,10 +51,7 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         setProfiles(data);
-        const saved = localStorage.getItem(`magneto_commands_cisco_ios`);
-        if (saved) {
-          setCommandText(JSON.parse(saved));
-        } else if (data['cisco_ios']) {
+        if (data['cisco_ios']) {
           setCommandText({
             l1: data['cisco_ios'].l1.join('\n'),
             l2: data['cisco_ios'].l2.join('\n'),
@@ -68,10 +65,7 @@ export default function App() {
   const handleVendorChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     setVendor(v);
-    const saved = localStorage.getItem(`magneto_commands_${v}`);
-    if (saved) {
-      setCommandText(JSON.parse(saved));
-    } else if (profiles && profiles[v]) {
+    if (profiles && profiles[v]) {
       setCommandText({
         l1: profiles[v].l1.join('\n'),
         l2: profiles[v].l2.join('\n'),
@@ -79,11 +73,6 @@ export default function App() {
         hardware: profiles[v].hardware.join('\n'),
       });
     }
-  };
-
-  const handleSaveCommands = () => {
-    localStorage.setItem(`magneto_commands_${vendor}`, JSON.stringify(commandText));
-    alert('Comandos salvos com sucesso!');
   };
 
   const handleDiscovery = async (e: React.FormEvent) => {
@@ -231,7 +220,7 @@ export default function App() {
       <header className="bg-indigo-600 dark:bg-indigo-900 text-white shadow-md sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3">
           <Network className="w-8 h-8" />
-          <h1 className="text-2xl font-bold tracking-tight">Magneto</h1>
+          <h1 className="text-2xl font-bold tracking-tight">NetTopo Builder</h1>
           <span className="hidden sm:inline-block ml-4 text-indigo-200 dark:text-indigo-300 text-sm font-medium border-l border-indigo-500 pl-4">
             L1, L2 & L3 Topology Generator
           </span>
@@ -311,28 +300,28 @@ export default function App() {
               </div>
             )}
 
+            {/* Common Vendor Select */}
+            <div className="mb-8 max-w-md">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                Vendor / OS
+              </label>
+              <select
+                value={vendor}
+                onChange={handleVendorChange}
+                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
+              >
+                <option value="cisco_ios">Cisco IOS-XE</option>
+                <option value="cisco_nxos">Cisco NX-OS</option>
+                <option value="aruba_os">HP/HPE Aruba Switches</option>
+                <option value="hpe_comware">HPE Comware</option>
+                <option value="juniper_junos">Juniper Junos</option>
+                <option value="huawei_vrp">Huawei VRP</option>
+              </select>
+            </div>
+
             {/* Discovery Form */}
             {activeTab === 'discovery' && (
               <form onSubmit={handleDiscovery} className="space-y-6 max-w-2xl animate-in fade-in">
-                {/* Common Vendor Select */}
-                <div className="max-w-md">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    Vendor / OS
-                  </label>
-                  <select
-                    value={vendor}
-                    onChange={handleVendorChange}
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
-                  >
-                    <option value="cisco_ios">Cisco IOS-XE</option>
-                    <option value="cisco_nxos">Cisco NX-OS</option>
-                    <option value="aruba_os">HP/HPE Aruba Switches</option>
-                    <option value="hpe_comware">HPE Comware</option>
-                    <option value="juniper_junos">Juniper Junos</option>
-                    <option value="huawei_vrp">Huawei VRP</option>
-                  </select>
-                </div>
-
                 <div className="max-w-md">
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                     Endereço(s) IP (Seed)
@@ -429,15 +418,6 @@ export default function App() {
                           placeholder="Um comando por linha"
                         />
                       </div>
-                      <div className="sm:col-span-2 flex justify-end mt-2">
-                        <button
-                          type="button"
-                          onClick={handleSaveCommands}
-                          className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-800 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                        >
-                          Salvar Comandos
-                        </button>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -468,12 +448,12 @@ export default function App() {
                 <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-10 text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                   <Server className="w-12 h-12 text-slate-400 dark:text-slate-500 mx-auto mb-4" />
                   <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                    Arraste os arquivos de coleta (folder, .txt, .log) ou clique para selecionar.
+                    Arraste os arquivos de coleta (.txt, .log) ou clique para selecionar.
                   </p>
                   <input
                     type="file"
                     multiple
-                    {...{ webkitdirectory: "", directory: "" } as any}
+                    accept=".txt,.log"
                     ref={fileInputRef}
                     onChange={(e) => setFiles(e.target.files)}
                     className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 dark:file:bg-indigo-900/30 file:text-indigo-700 dark:file:text-indigo-400 hover:file:bg-indigo-100 dark:hover:file:bg-indigo-900/50 cursor-pointer transition-colors"
