@@ -1,4 +1,4 @@
-import { Vendor, CommandProfile } from '../../shared/types';
+import { Vendor, CommandProfile } from '../../shared/types.ts';
 
 export const COMMAND_PROFILES: Record<Vendor, CommandProfile> = {
   cisco_ios: {

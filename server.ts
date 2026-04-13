@@ -1,11 +1,11 @@
 import express from 'express';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
-import { parseRawData } from './src/server/services/parser';
-import { applyLayout } from './src/server/services/layout';
-import { generateDrawioXml } from './src/server/services/drawio';
-import { COMMAND_PROFILES } from './src/server/services/profiles';
-import { executeCommands } from './src/server/services/ssh';
+import { parseRawData } from './src/server/services/parser.ts';
+import { applyLayout } from './src/server/services/layout.ts';
+import { generateDrawioXml } from './src/server/services/drawio.ts';
+import { COMMAND_PROFILES } from './src/server/services/profiles.ts';
+import { executeCommands } from './src/server/services/ssh.ts';
 import path from 'path';
 
 const upload = multer({ storage: multer.memoryStorage() });

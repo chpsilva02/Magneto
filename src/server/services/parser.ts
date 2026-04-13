@@ -1,4 +1,4 @@
-import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types';
+import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
 
 function normalizePort(port: string): string {
   let p = port.replace(/\s+/g, '');

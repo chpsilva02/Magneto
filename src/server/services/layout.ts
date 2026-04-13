@@ -1,5 +1,5 @@
 import * as d3 from 'd3-force';
-import { TopologyData } from '../../shared/types';
+import { TopologyData } from '../../shared/types.ts';
 
 export function applyLayout(topology: TopologyData): TopologyData {
   // Check if all nodes already have x and y defined (fixed layout)

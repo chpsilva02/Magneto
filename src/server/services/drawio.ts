@@ -1,6 +1,6 @@
 import { create } from 'xmlbuilder2';
-import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types';
-import { getDrawioShape } from './icons';
+import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
+import { getDrawioShape } from './icons.ts';
 
 function buildNodeLabel(node: TopologyNode): string {
   if (node.role === 'cloud') {
