@@ -40,6 +40,12 @@ function isNetworkInterface(port: string): boolean {
   return /^(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Portchannel|Ser|Serial|mgmt|Vl|Vlan|XGE|25GE|40GE|100GE|ge|xe|et)/i.test(p);
 }
 
+function normalizeHostname(name: string): string {
+  if (!name) return '';
+  // Remove leading/trailing non-alphanumeric characters (like hyphens, spaces, dots)
+  return name.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '').trim();
+}
+
 function isValidDeviceName(name: string): boolean {
   if (!name) return false;
   if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info|Time|Chassis|Update|Index|Management|Compiled|Oper|DCBX|TLV|Auto-negotiation|Max\/min|Aggregation|HP|Version|Sequence|http|Percentage|CoS|Hardware|Platform|Software|uptime|processor|memory|bytes|packets|errors|discard|broadcast|multicast|unicast)$/i.test(name)) return false;
@@ -133,7 +139,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       const platformMatch = block.match(/Platform:\s*([^,]+)/i);
 
       if (deviceIdMatch && interfaceMatch) {
-        let remoteDevice = deviceIdMatch[1].trim().split('.')[0];
+        let remoteDevice = normalizeHostname(deviceIdMatch[1].trim().split('.')[0]);
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
@@ -169,7 +175,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       const descMatch = block.match(/System Description\s*[:=]\s*([^\r\n]+)/i);
 
       if (localIntfMatch && sysNameMatch && portIdMatch) {
-        let remoteDevice = sysNameMatch[1].trim().split('.')[0];
+        let remoteDevice = normalizeHostname(sysNameMatch[1].trim().split('.')[0]);
         let localPort = normalizePort(localIntfMatch[1].trim());
         let remotePort = normalizePort(portIdMatch[1].trim());
 
@@ -379,7 +385,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   const fileBlocks = rawData.split(/--- FILE: (.*?) ---\n/g);
   if (fileBlocks.length > 1) {
     for (let f = 1; f < fileBlocks.length; f += 2) {
-      let filename = fileBlocks[f].trim().replace(/\.[^/.]+$/, ""); // remove extension
+      let filename = normalizeHostname(fileBlocks[f].trim().replace(/\.[^/.]+$/, "")); // remove extension
       const fileContent = fileBlocks[f+1];
       
       const parts = fileContent.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
@@ -392,7 +398,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       if (parts.length > 1) {
         let foundValidPrompt = false;
         for (let i = 1; i < parts.length; i += 2) {
-          let hostname = parts[i].split('.')[0];
+          let hostname = normalizeHostname(parts[i].split('.')[0]);
           if (isValidDeviceName(hostname)) {
             foundValidPrompt = true;
             parseBlock(hostname, parts[i+1]);
@@ -412,7 +418,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     
     if (parts.length > 1) {
       for (let i = 1; i < parts.length; i += 2) {
-        let hostname = parts[i].split('.')[0];
+        let hostname = normalizeHostname(parts[i].split('.')[0]);
         if (!isValidDeviceName(hostname)) {
           hostname = 'Unknown-Device';
         }
