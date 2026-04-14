@@ -2,8 +2,8 @@ import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts'
 import { TopologyDatabase } from './topologyDb.ts';
 
 function normalizePort(port: string): string {
-  let p = port.replace(/\s+/g, '');
-  if (/^te-gigabitethernet/i.test(p)) return p.replace(/^te-gigabitethernet/i, 'Te');
+  let p = port.replace(/[\s-]/g, ''); // remove spaces and dashes
+  if (/^tegigabitethernet/i.test(p)) return p.replace(/^tegigabitethernet/i, 'Te');
   if (/^xgigabitethernet/i.test(p)) return p.replace(/^xgigabitethernet/i, 'XGE');
   if (/^gigabitethernet/i.test(p)) return p.replace(/^gigabitethernet/i, 'Gi');
   if (/^gig/i.test(p)) return p.replace(/^gig/i, 'Gi');
@@ -16,8 +16,8 @@ function normalizePort(port: string): string {
   if (/^hundredgigabitethernet/i.test(p)) return p.replace(/^hundredgigabitethernet/i, 'Hu');
   if (/^ethernet/i.test(p)) return p.replace(/^ethernet/i, 'Eth');
   if (/^eth/i.test(p)) return p.replace(/^eth/i, 'Eth');
-  if (/^port-channel/i.test(p)) return p.replace(/^port-channel/i, 'Po');
-  return p;
+  if (/^portchannel/i.test(p)) return p.replace(/^portchannel/i, 'Po');
+  return port.replace(/\s+/g, ''); // return original without spaces if no match
 }
 
 function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'distribution' | 'access' | 'router' | 'firewall' | 'cloud' {
@@ -32,6 +32,13 @@ function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'd
   if (h.startsWith('sep') || m.includes('phone') || m.includes('room') || m.includes('bar') || m.includes('endpoint')) return 'access';
   
   return 'access'; // default
+}
+
+function isValidDeviceName(name: string): boolean {
+  if (!name) return false;
+  if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info)$/i.test(name)) return false;
+  if (/^\d+$/.test(name)) return false; // purely numeric like "7"
+  return true;
 }
 
 export function parseRawData(rawData: string, vendor: string): TopologyData {
@@ -79,7 +86,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
-        if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+        if (isValidDeviceName(remoteDevice) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
           db.insertPhysicalLink(
             hostname,
             localPort,
@@ -113,7 +120,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
           remoteModel = hwMatch ? hwMatch[1].trim() : descMatch[1].substring(0, 40).trim();
         }
 
-        if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+        if (isValidDeviceName(remoteDevice) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
           db.insertPhysicalLink(
             hostname,
             localPort,
@@ -172,8 +179,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         if (remoteDevice) {
           remoteDevice = remoteDevice.split('.')[0];
           
-          // Filter out false positive device names
-          if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address)$/i.test(remoteDevice)) {
+          if (!isValidDeviceName(remoteDevice)) {
             remoteDevice = '';
           }
           
@@ -196,7 +202,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       } else {
         if (line.split(/\s+/).length === 1) {
           const potDevice = line.trim();
-          if (!/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address)$/i.test(potDevice)) {
+          if (isValidDeviceName(potDevice)) {
             pendingDevice = potDevice;
           }
         }
@@ -292,14 +298,37 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
   }
 
-  const parts = rawData.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
-  if (parts.length === 1) {
-    parseBlock('Unknown-Device', rawData);
+  const fileBlocks = rawData.split(/--- FILE: ([^-]+) ---\n/);
+  if (fileBlocks.length > 1) {
+    for (let f = 1; f < fileBlocks.length; f += 2) {
+      let filename = fileBlocks[f].trim().replace(/\.[^/.]+$/, ""); // remove extension
+      const fileContent = fileBlocks[f+1];
+      
+      const parts = fileContent.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
+      if (parts.length === 1) {
+        parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', fileContent);
+      } else {
+        for (let i = 1; i < parts.length; i += 2) {
+          let hostname = parts[i].split('.')[0];
+          if (!isValidDeviceName(hostname)) {
+            hostname = isValidDeviceName(filename) ? filename : 'Unknown-Device';
+          }
+          parseBlock(hostname, parts[i+1]);
+        }
+      }
+    }
   } else {
-    for (let i = 1; i < parts.length; i += 2) {
-      const hostname = parts[i].split('.')[0]; // Strip domain to match CDP
-      const blockData = parts[i+1];
-      parseBlock(hostname, blockData);
+    const parts = rawData.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
+    if (parts.length === 1) {
+      parseBlock('Unknown-Device', rawData);
+    } else {
+      for (let i = 1; i < parts.length; i += 2) {
+        let hostname = parts[i].split('.')[0];
+        if (!isValidDeviceName(hostname)) {
+          hostname = 'Unknown-Device';
+        }
+        parseBlock(hostname, parts[i+1]);
+      }
     }
   }
 
