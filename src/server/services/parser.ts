@@ -487,17 +487,24 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       }
     }
 
-    const linkKey = `${sDevice}_${lPort}_${rDevice}_${rPort}`;
+    const linkKey1 = `${sDevice}_${lPort}_${rDevice}_${rPort}`;
+    const linkKey2 = `${rDevice}_${rPort}_${sDevice}_${lPort}`;
     
-    linksMap[linkKey] = {
-      id: `l1_${linkIdCounter++}`,
-      source: sDevice,
-      target: rDevice,
-      src_port: lPort,
-      dst_port: rPort,
-      layer: 'L1',
-      protocol: link.protocols
-    };
+    if (!linksMap[linkKey1] && !linksMap[linkKey2]) {
+      linksMap[linkKey1] = {
+        id: `l1_${linkIdCounter++}`,
+        source: sDevice,
+        target: rDevice,
+        src_port: lPort,
+        dst_port: rPort,
+        layer: 'L1',
+        protocol: link.protocols
+      };
+    } else if (linksMap[linkKey1] && link.protocols && !linksMap[linkKey1].protocol?.includes(link.protocols)) {
+        linksMap[linkKey1].protocol += `,${link.protocols}`;
+    } else if (linksMap[linkKey2] && link.protocols && !linksMap[linkKey2].protocol?.includes(link.protocols)) {
+        linksMap[linkKey2].protocol += `,${link.protocols}`;
+    }
   }
 
   // Add L2 Links based on STP and L1 adjacency
