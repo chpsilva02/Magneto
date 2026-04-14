@@ -3,6 +3,8 @@ import { TopologyDatabase } from './topologyDb.ts';
 
 function normalizePort(port: string): string {
   let p = port.replace(/\s+/g, '');
+  if (/^te-gigabitethernet/i.test(p)) return p.replace(/^te-gigabitethernet/i, 'Te');
+  if (/^xgigabitethernet/i.test(p)) return p.replace(/^xgigabitethernet/i, 'XGE');
   if (/^gigabitethernet/i.test(p)) return p.replace(/^gigabitethernet/i, 'Gi');
   if (/^gig/i.test(p)) return p.replace(/^gig/i, 'Gi');
   if (/^fastethernet/i.test(p)) return p.replace(/^fastethernet/i, 'Fa');
@@ -22,11 +24,11 @@ function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'd
   const h = hostname.toLowerCase();
   const m = model.toLowerCase();
   
-  if (h.includes('fw') || m.includes('firewall') || m.includes('srx') || m.includes('asa') || m.includes('fpr')) return 'firewall';
-  if (h.includes('rtr') || h.includes('router') || m.includes('isr') || m.includes('asr') || m.includes('c8200') || m.includes('c1100')) return 'router';
-  if (h.includes('core') || m.includes('nexus') || m.includes('n9k') || m.includes('c9500') || m.includes('c9600')) return 'core';
-  if (h.includes('dist') || m.includes('c9400') || m.includes('c3850') || m.includes('c3750')) return 'distribution';
-  if (h.includes('sw') || m.includes('switch') || m.includes('c2960') || m.includes('c9200') || m.includes('c9300')) return 'access';
+  if (h.includes('fw') || m.includes('firewall') || m.includes('srx') || m.includes('asa') || m.includes('fpr') || m.includes('usg')) return 'firewall';
+  if (h.includes('rtr') || h.includes('router') || m.includes('isr') || m.includes('asr') || m.includes('c8200') || m.includes('c1100') || m.includes('ne40') || m.includes('ar')) return 'router';
+  if (h.includes('core') || m.includes('nexus') || m.includes('n9k') || m.includes('c9500') || m.includes('c9600') || m.includes('12500') || m.includes('ce12800') || m.includes('s12700')) return 'core';
+  if (h.includes('dist') || m.includes('c9400') || m.includes('c3850') || m.includes('c3750') || m.includes('s5720') || m.includes('s5730') || m.includes('mx9116')) return 'distribution';
+  if (h.includes('sw') || m.includes('switch') || m.includes('c2960') || m.includes('c9200') || m.includes('c9300') || m.includes('s5700')) return 'access';
   if (h.startsWith('sep') || m.includes('phone') || m.includes('room') || m.includes('bar') || m.includes('endpoint')) return 'access';
   
   return 'access'; // default
@@ -48,9 +50,9 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
 
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
-    const hwMatch = blockData.match(/(?:cisco|hardware|model)\s+(WS-C\w+|C\d+|Nexus\s+\d+|ISR\d+|ASR\d+|FPR\d+|SRX\d+)/i);
-    if (hwMatch && hwMatch[1]) {
-      hwModel = hwMatch[1];
+    const hwMatch = blockData.match(/(?:cisco|hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
+    if (hwMatch && hwMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(hwMatch[1])) {
+      hwModel = hwMatch[1].trim();
     }
     
     const isRoot = /This bridge is the root/i.test(blockData);
@@ -169,23 +171,34 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         
         if (remoteDevice) {
           remoteDevice = remoteDevice.split('.')[0];
-          let localPort = normalizePort(localPortFull);
-          let remotePort = normalizePort(remotePortFull);
           
-          if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
-            db.insertPhysicalLink(
-              hostname,
-              localPort,
-              remoteDevice,
-              remotePort,
-              'cdp/lldp'
-            );
+          // Filter out false positive device names
+          if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address)$/i.test(remoteDevice)) {
+            remoteDevice = '';
+          }
+          
+          if (remoteDevice) {
+            let localPort = normalizePort(localPortFull);
+            let remotePort = normalizePort(remotePortFull);
+            
+            if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+              db.insertPhysicalLink(
+                hostname,
+                localPort,
+                remoteDevice,
+                remotePort,
+                'cdp/lldp'
+              );
+            }
           }
         }
         pendingDevice = '';
       } else {
         if (line.split(/\s+/).length === 1) {
-          pendingDevice = line;
+          const potDevice = line.trim();
+          if (!/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address)$/i.test(potDevice)) {
+            pendingDevice = potDevice;
+          }
         }
       }
     }
