@@ -67,28 +67,39 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
     
+    const extractFirstValid = (regex: RegExp) => {
+        const matches = [...blockData.matchAll(regex)];
+        for (const match of matches) {
+            const val = match[1].trim();
+            if (val && val.toUpperCase() !== 'UNSPECIFIED' && val.toUpperCase() !== 'UNKNOWN' && val.toUpperCase() !== 'N/A') {
+                return val;
+            }
+        }
+        return null;
+    };
+
     // 1. Try explicit inventory/manuinfo commands first (highest accuracy)
-    const pidMatch = blockData.match(/PID:\s*([A-Za-z0-9\-_]+)/i);
-    const productMatch = blockData.match(/Product(?: Name| ID| Number)?\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
-    const manuinfoMatch = blockData.match(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
-    const sysTypeMatch = blockData.match(/System Type\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
-    const modelMatch = blockData.match(/(?:Hardware Model|Model)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
+    const pidMatch = extractFirstValid(/PID:\s*([^,\r\n]+)/gi);
+    const productMatch = extractFirstValid(/Product(?: Name| ID| Number)?\s*[:=]\s*([^,\r\n]+)/gi);
+    const manuinfoMatch = extractFirstValid(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([^,\r\n]+)/gi);
+    const sysTypeMatch = extractFirstValid(/System Type\s*[:=]\s*([^,\r\n]+)/gi);
+    const modelMatch = extractFirstValid(/(?:Hardware Model|Model)\s*[:=]\s*([^,\r\n]+)/gi);
     
     // 2. Try specific known patterns in show version or other outputs
-    const specificMatch = blockData.match(/\b(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|MX\d{4,}[\w\-]*|S\d{4,}[\w\-]*|Z\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)\b/i);
+    const specificMatch = extractFirstValid(/\b(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|MX\d{4,}[\w\-]*|S\d{4,}[\w\-]*|Z\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)\b/gi);
 
     if (pidMatch) {
-        hwModel = pidMatch[1].trim();
+        hwModel = pidMatch;
     } else if (productMatch) {
-        hwModel = productMatch[1].trim();
+        hwModel = productMatch;
     } else if (manuinfoMatch) {
-        hwModel = manuinfoMatch[1].trim();
+        hwModel = manuinfoMatch;
     } else if (sysTypeMatch) {
-        hwModel = sysTypeMatch[1].trim();
+        hwModel = sysTypeMatch;
     } else if (modelMatch) {
-        hwModel = modelMatch[1].trim();
+        hwModel = modelMatch;
     } else if (specificMatch) {
-        hwModel = specificMatch[1].trim();
+        hwModel = specificMatch;
     } else {
         // 3. Fallback to generic pattern
         const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
