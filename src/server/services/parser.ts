@@ -66,19 +66,25 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
 
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
-    // Try specific known patterns first for high accuracy
-    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*|Nexus Operating System \(NX-OS\) Software)/i);
+    
+    // 1. Try explicit inventory/manuinfo commands first (highest accuracy)
     const pidMatch = blockData.match(/PID:\s*([A-Za-z0-9\-_]+)/i);
-    const manuinfoMatch = blockData.match(/DEVICE_NAME\s*:\s*([A-Za-z0-9\-_]+)/i);
+    const productMatch = blockData.match(/Product(?: Name| ID| Number)?\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
+    const manuinfoMatch = blockData.match(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
+    
+    // 2. Try specific known patterns in show version or other outputs
+    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*|Nexus Operating System \(NX-OS\) Software)/i);
 
-    if (specificMatch) {
-        hwModel = specificMatch[1].trim();
-    } else if (pidMatch) {
+    if (pidMatch) {
         hwModel = pidMatch[1].trim();
+    } else if (productMatch) {
+        hwModel = productMatch[1].trim();
     } else if (manuinfoMatch) {
         hwModel = manuinfoMatch[1].trim();
+    } else if (specificMatch) {
+        hwModel = specificMatch[1].trim();
     } else {
-        // Fallback to generic pattern
+        // 3. Fallback to generic pattern
         const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
         if (genericMatch && genericMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(genericMatch[1])) {
             hwModel = genericMatch[1].trim();
