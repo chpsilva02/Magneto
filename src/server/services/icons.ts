@@ -2,7 +2,7 @@ export function getDrawioShape(hardwareModel: string, role: string): string {
   const model = hardwareModel.toUpperCase();
 
   // Cisco Nexus
-  if (model.includes('NEXUS') || model.includes('N9K') || model.includes('N7K') || model.includes('C9500') || model.includes('C9600')) {
+  if (model.includes('NEXUS') || model.includes('N9K') || model.includes('N7K') || model.includes('C9500') || model.includes('C9600') || model.includes('NX-OS')) {
     return 'shape=mxgraph.cisco19.rect;prIcon=server_switch;fillColor=#FAFAFA;strokeColor=#005073;';
   }
   // Cisco Catalyst

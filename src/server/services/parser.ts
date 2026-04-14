@@ -67,7 +67,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
     // Try specific known patterns first for high accuracy
-    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)/i);
+    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*|Nexus Operating System \(NX-OS\) Software)/i);
     const pidMatch = blockData.match(/PID:\s*([A-Za-z0-9\-_]+)/i);
     const manuinfoMatch = blockData.match(/DEVICE_NAME\s*:\s*([A-Za-z0-9\-_]+)/i);
 
