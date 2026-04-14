@@ -73,7 +73,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     const manuinfoMatch = blockData.match(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
     
     // 2. Try specific known patterns in show version or other outputs
-    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*|Nexus Operating System \(NX-OS\) Software)/i);
+    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)/i);
 
     if (pidMatch) {
         hwModel = pidMatch[1].trim();
@@ -89,6 +89,11 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         if (genericMatch && genericMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(genericMatch[1])) {
             hwModel = genericMatch[1].trim();
         }
+    }
+    
+    // Clean up hwModel if it accidentally captured an OS string
+    if (hwModel.toLowerCase().includes('nexus operating system') || hwModel.toLowerCase().includes('nx-os')) {
+        hwModel = 'Nexus';
     }
     
     const isRoot = /This bridge is the root/i.test(blockData);
@@ -115,6 +120,11 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
+        let remoteModel = platformMatch ? platformMatch[1].trim() : undefined;
+        if (remoteModel && (remoteModel.toLowerCase().includes('nexus operating system') || remoteModel.toLowerCase().includes('nx-os'))) {
+            remoteModel = 'Nexus';
+        }
+
         if (isValidDeviceName(remoteDevice) && isNetworkInterface(localPort) && isNetworkInterface(remotePort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
           db.insertPhysicalLink(
             hostname,
@@ -123,7 +133,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
             remotePort,
             'cdp',
             ipMatch ? ipMatch[1].trim() : undefined,
-            platformMatch ? platformMatch[1].trim() : undefined
+            remoteModel
           );
         }
       }
@@ -150,6 +160,10 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         if (descMatch) {
           const hwMatch = descMatch[1].match(/(?:Hardware:\s*|Platform:\s*|Cisco\s+|Dell EMC\s+)([^,]+)/i);
           remoteModel = hwMatch ? hwMatch[1].trim() : descMatch[1].substring(0, 40).trim();
+        }
+        
+        if (remoteModel && (remoteModel.toLowerCase().includes('nexus operating system') || remoteModel.toLowerCase().includes('nx-os'))) {
+            remoteModel = 'Nexus';
         }
 
         if (isValidDeviceName(remoteDevice) && isNetworkInterface(localPort) && isNetworkInterface(remotePort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
