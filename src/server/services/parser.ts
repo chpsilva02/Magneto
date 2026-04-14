@@ -124,15 +124,15 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
 
     // --- PARSE LLDP DETAIL ---
-    // Handle both Cisco (Local Intf:) and HP/Huawei (LLDP neighbor-information of port)
-    const lldpBlocks = blockData.split(/(?=Local Intf:|LLDP neighbor-information of port)/i);
+    // Handle Cisco (Local Intf:), HP/Huawei (LLDP neighbor-information of port), and Dell (Local Interface)
+    const lldpBlocks = blockData.split(/(?=Local Intf:|Local Interface|LLDP neighbor-information of port)/i);
     for (const block of lldpBlocks) {
-      if (!/Local Intf:|LLDP neighbor-information of port/i.test(block)) continue;
+      if (!/Local Intf:|Local Interface|LLDP neighbor-information of port/i.test(block)) continue;
 
-      const localIntfMatch = block.match(/Local Intf:\s*([^\r\n]+)/i) || block.match(/LLDP neighbor-information of port.*?\[([^\]]+)\]/i) || block.match(/LLDP neighbor-information of port\s+([^\s\[:]+)/i);
+      const localIntfMatch = block.match(/Local Intf:\s*([^\r\n]+)/i) || block.match(/Local Interface\s*[:]?\s*([^\r\n]+)/i) || block.match(/LLDP neighbor-information of port.*?\[([^\]]+)\]/i) || block.match(/LLDP neighbor-information of port\s+([^\s\[:]+)/i);
       const sysNameMatch = block.match(/System Name\s*[:=]\s*([^\r\n]+)/i);
       const portIdMatch = block.match(/Port id\s*[:=]\s*([^\r\n]+)/i);
-      const ipMatch = block.match(/Management address\s*[:=]\s*([0-9.]+)/i) || block.match(/IP\s*[:=]\s*([0-9.]+)/i);
+      const ipMatch = block.match(/Management address\s*[:=]\s*([0-9.]+)/i) || block.match(/IP\s*[:=]\s*([0-9.]+)/i) || block.match(/IPv4 address\s*[:=]\s*([0-9.]+)/i);
       const descMatch = block.match(/System Description\s*[:=]\s*([^\r\n]+)/i);
 
       if (localIntfMatch && sysNameMatch && portIdMatch) {
@@ -142,7 +142,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
 
         let remoteModel = undefined;
         if (descMatch) {
-          const hwMatch = descMatch[1].match(/(?:Hardware:\s*|Platform:\s*|Cisco\s+)([^,]+)/i);
+          const hwMatch = descMatch[1].match(/(?:Hardware:\s*|Platform:\s*|Cisco\s+|Dell EMC\s+)([^,]+)/i);
           remoteModel = hwMatch ? hwMatch[1].trim() : descMatch[1].substring(0, 40).trim();
         }
 
