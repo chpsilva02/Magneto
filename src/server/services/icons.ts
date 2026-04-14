@@ -3,7 +3,7 @@ export function getDrawioShape(hardwareModel: string, role: string): string {
 
   // Cisco Nexus
   if (model.includes('NEXUS') || model.includes('N9K') || model.includes('N7K') || model.includes('C9500') || model.includes('C9600') || model.includes('NX-OS')) {
-    return 'shape=mxgraph.cisco19.rect;prIcon=server_switch;fillColor=#FAFAFA;strokeColor=#005073;';
+    return 'shape=mxgraph.cisco19.rect;prIcon=l3_switch;fillColor=#FAFAFA;strokeColor=#005073;';
   }
   // Cisco Catalyst
   if (model.includes('WS-C') || model.includes('C9200') || model.includes('C9300') || model.includes('C3850') || model.includes('C3750')) {
@@ -25,7 +25,7 @@ export function getDrawioShape(hardwareModel: string, role: string): string {
   // Fallbacks based on role
   switch (role) {
     case 'core':
-      return 'shape=mxgraph.cisco19.rect;prIcon=server_switch;fillColor=#FAFAFA;strokeColor=#005073;';
+      return 'shape=mxgraph.cisco19.rect;prIcon=l3_switch;fillColor=#FAFAFA;strokeColor=#005073;';
     case 'distribution':
       return 'shape=mxgraph.cisco19.rect;prIcon=l3_switch;fillColor=#FAFAFA;strokeColor=#005073;';
     case 'router':
