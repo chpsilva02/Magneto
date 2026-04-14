@@ -58,12 +58,12 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
     // Try specific known patterns first for high accuracy
-    const specificMatch = blockData.match(/(WS-C\w+|C\d{4,}|Nexus\s*\d+|ISR\d+|ASR\d+|FPR\d+|SRX\d+|MX\d{4,}|S\d{4,}|NE\d{2,}|125\d{2})/i);
+    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)/i);
     if (specificMatch) {
         hwModel = specificMatch[1].trim();
     } else {
         // Fallback to generic pattern
-        const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+)/i);
+        const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
         if (genericMatch && genericMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(genericMatch[1])) {
             hwModel = genericMatch[1].trim();
         }
@@ -312,9 +312,13 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       const fileContent = fileBlocks[f+1];
       
       const parts = fileContent.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
-      if (parts.length === 1) {
-        parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', fileContent);
-      } else {
+      
+      // Parse the text before the first prompt (if any)
+      if (parts[0].trim().length > 0) {
+        parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', parts[0]);
+      }
+      
+      if (parts.length > 1) {
         let foundValidPrompt = false;
         for (let i = 1; i < parts.length; i += 2) {
           let hostname = parts[i].split('.')[0];
@@ -326,17 +330,16 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
             parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', parts[i+1]);
           }
         }
-        // If we didn't find any valid prompt in the whole file, just parse the whole content under the filename
-        if (!foundValidPrompt && parts.length > 1) {
-            parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', fileContent);
-        }
       }
     }
   } else {
     const parts = rawData.split(/^([a-zA-Z0-9_.-]+)[#>]/m);
-    if (parts.length === 1) {
-      parseBlock('Unknown-Device', rawData);
-    } else {
+    
+    if (parts[0].trim().length > 0) {
+      parseBlock('Unknown-Device', parts[0]);
+    }
+    
+    if (parts.length > 1) {
       for (let i = 1; i < parts.length; i += 2) {
         let hostname = parts[i].split('.')[0];
         if (!isValidDeviceName(hostname)) {
