@@ -34,10 +34,19 @@ function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'd
   return 'access'; // default
 }
 
+function isNetworkInterface(port: string): boolean {
+  if (!port) return false;
+  const p = port.replace(/[\s-]/g, '');
+  return /^(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Portchannel|Ser|Serial|mgmt|Vl|Vlan|XGE|25GE|40GE|100GE|ge|xe|et)/i.test(p);
+}
+
 function isValidDeviceName(name: string): boolean {
   if (!name) return false;
-  if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info|Time|Chassis|Update|Index)$/i.test(name)) return false;
+  if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info|Time|Chassis|Update|Index|Management|Compiled|Oper|DCBX|TLV|Auto-negotiation|Max\/min|Aggregation|HP|Version|Sequence|http|Percentage|CoS|Hardware|Platform|Software|uptime|processor|memory|bytes|packets|errors|discard|broadcast|multicast|unicast)$/i.test(name)) return false;
   if (/^\d+$/.test(name)) return false; // purely numeric like "7"
+  if (name.toLowerCase().includes('not advertised')) return false;
+  if (name.toLowerCase().includes('poweredge')) return false;
+  if (name.length < 2) return false;
   return true;
 }
 
@@ -100,7 +109,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
-        if (isValidDeviceName(remoteDevice) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+        if (isValidDeviceName(remoteDevice) && isNetworkInterface(localPort) && isNetworkInterface(remotePort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
           db.insertPhysicalLink(
             hostname,
             localPort,
@@ -137,7 +146,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
           remoteModel = hwMatch ? hwMatch[1].trim() : descMatch[1].substring(0, 40).trim();
         }
 
-        if (isValidDeviceName(remoteDevice) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+        if (isValidDeviceName(remoteDevice) && isNetworkInterface(localPort) && isNetworkInterface(remotePort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
           db.insertPhysicalLink(
             hostname,
             localPort,
@@ -159,8 +168,8 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       
-      // Detect start of table
-      if (line.match(/^(Device ID|System Name|Local Intf)/i)) {
+      // Detect start of table strictly
+      if (line.match(/^(?:Device ID|Loc PortID|System Name)\s+(?:Local Intrfce|Local Intf|Rem Host Name|Local Interface)/i)) {
         inTable = true;
         pendingDevice = '';
         continue;
@@ -173,57 +182,71 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       }
 
       if (!inTable) continue;
-      if (line.startsWith('Capability') || line.startsWith('Port ID')) continue;
+      if (line.startsWith('Capability') || line.startsWith('Port ID') || line.startsWith('------')) continue;
       
-      // Broad regex to capture local interface (including mgmt, serial), holdtime (optional), and remote port
-      // This handles both Cisco (with holdtime) and HP/Huawei (without holdtime, just Local Intf and Port ID)
-      const intfRegex = /(?:^|\s)([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+)\s+(?:\d+\s+)?.*?\s+([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+|\S+)$/i;
-      const match = line.match(intfRegex);
-      
-      if (match) {
-        let remoteDevice = '';
-        const firstToken = line.split(/\s+/)[0];
-        const localPortFull = match[1];
-        const remotePortFull = match[2];
-        
-        const isInterface = /^(Gi|Gig|Fa|Fas|Te|Ten|Twe|Fo|Hu|Eth|Po|Port|Ser|mgmt|Vl)/i.test(firstToken);
-        
-        if (isInterface) {
-          remoteDevice = pendingDevice;
-        } else {
-          remoteDevice = firstToken;
+      const tokens = line.split(/\s+/);
+      if (tokens.length === 0) continue;
+
+      let remoteDevice = '';
+      let localPortFull = '';
+      let remotePortFull = '';
+
+      // Handle Dell/Force10 format: Loc PortID Rem Host Name Rem Port Id Rem Chassis Id
+      if (isNetworkInterface(tokens[0]) && tokens.length >= 3 && isNetworkInterface(tokens[2])) {
+        localPortFull = tokens[0];
+        remoteDevice = tokens[1];
+        remotePortFull = tokens[2];
+      } else {
+        // Standard CDP/LLDP format
+        if (tokens.length === 1) {
+          pendingDevice = tokens[0];
+          continue;
         }
-        
-        if (remoteDevice) {
-          remoteDevice = remoteDevice.split('.')[0];
-          
-          if (!isValidDeviceName(remoteDevice)) {
-            remoteDevice = '';
+
+        let interfaceStartIndex = 0;
+        if (!isNetworkInterface(tokens[0]) && !isNetworkInterface(tokens[0] + (tokens[1] || ''))) {
+          remoteDevice = tokens[0];
+          interfaceStartIndex = 1;
+        } else {
+          remoteDevice = pendingDevice;
+        }
+
+        if (isNetworkInterface(tokens[interfaceStartIndex])) {
+          localPortFull = tokens[interfaceStartIndex];
+          if (tokens.length > interfaceStartIndex + 1 && /^\d+\/\d+/.test(tokens[interfaceStartIndex + 1])) {
+            localPortFull += tokens[interfaceStartIndex + 1];
           }
+        } else if (tokens.length > interfaceStartIndex + 1 && isNetworkInterface(tokens[interfaceStartIndex] + tokens[interfaceStartIndex + 1])) {
+          localPortFull = tokens[interfaceStartIndex] + tokens[interfaceStartIndex + 1];
+        }
+
+        if (isNetworkInterface(tokens[tokens.length - 1])) {
+          remotePortFull = tokens[tokens.length - 1];
+        } else if (tokens.length >= 2 && isNetworkInterface(tokens[tokens.length - 2] + tokens[tokens.length - 1])) {
+          remotePortFull = tokens[tokens.length - 2] + tokens[tokens.length - 1];
+        } else if (tokens.length >= 2 && isNetworkInterface(tokens[tokens.length - 2])) {
+          remotePortFull = tokens[tokens.length - 2] + tokens[tokens.length - 1];
+        }
+      }
+
+      if (remoteDevice && localPortFull && remotePortFull) {
+        remoteDevice = remoteDevice.split('.')[0];
+        
+        if (isValidDeviceName(remoteDevice)) {
+          let localPort = normalizePort(localPortFull);
+          let remotePort = normalizePort(remotePortFull);
           
-          if (remoteDevice) {
-            let localPort = normalizePort(localPortFull);
-            let remotePort = normalizePort(remotePortFull);
-            
-            if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
-              db.insertPhysicalLink(
-                hostname,
-                localPort,
-                remoteDevice,
-                remotePort,
-                'cdp/lldp'
-              );
-            }
+          if (isNetworkInterface(localPort) && isNetworkInterface(remotePort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+            db.insertPhysicalLink(
+              hostname,
+              localPort,
+              remoteDevice,
+              remotePort,
+              'cdp/lldp'
+            );
           }
         }
         pendingDevice = '';
-      } else {
-        if (line.split(/\s+/).length === 1) {
-          const potDevice = line.trim();
-          if (isValidDeviceName(potDevice)) {
-            pendingDevice = potDevice;
-          }
-        }
       }
     }
 
