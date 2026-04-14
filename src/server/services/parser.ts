@@ -59,8 +59,15 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     let hwModel = 'Unknown';
     // Try specific known patterns first for high accuracy
     const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)/i);
+    const pidMatch = blockData.match(/PID:\s*([A-Za-z0-9\-_]+)/i);
+    const manuinfoMatch = blockData.match(/DEVICE_NAME\s*:\s*([A-Za-z0-9\-_]+)/i);
+
     if (specificMatch) {
         hwModel = specificMatch[1].trim();
+    } else if (pidMatch) {
+        hwModel = pidMatch[1].trim();
+    } else if (manuinfoMatch) {
+        hwModel = manuinfoMatch[1].trim();
     } else {
         // Fallback to generic pattern
         const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
@@ -108,13 +115,16 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
 
     // --- PARSE LLDP DETAIL ---
-    const lldpBlocks = blockData.split(/Local Intf:/i).slice(1);
+    // Handle both Cisco (Local Intf:) and HP/Huawei (LLDP neighbor-information of port)
+    const lldpBlocks = blockData.split(/(?=Local Intf:|LLDP neighbor-information of port)/i);
     for (const block of lldpBlocks) {
-      const localIntfMatch = block.match(/^\s*([^\r\n]+)/);
-      const sysNameMatch = block.match(/System Name:\s*([^\r\n]+)/i);
-      const portIdMatch = block.match(/Port id:\s*([^\r\n]+)/i);
-      const ipMatch = block.match(/Management address:\s*([0-9.]+)/i) || block.match(/IP:\s*([0-9.]+)/i);
-      const descMatch = block.match(/System Description:\s*([^\r\n]+)/i);
+      if (!/Local Intf:|LLDP neighbor-information of port/i.test(block)) continue;
+
+      const localIntfMatch = block.match(/Local Intf:\s*([^\r\n]+)/i) || block.match(/LLDP neighbor-information of port.*?\[([^\]]+)\]/i) || block.match(/LLDP neighbor-information of port\s+([^\s\[:]+)/i);
+      const sysNameMatch = block.match(/System Name\s*[:=]\s*([^\r\n]+)/i);
+      const portIdMatch = block.match(/Port id\s*[:=]\s*([^\r\n]+)/i);
+      const ipMatch = block.match(/Management address\s*[:=]\s*([0-9.]+)/i) || block.match(/IP\s*[:=]\s*([0-9.]+)/i);
+      const descMatch = block.match(/System Description\s*[:=]\s*([^\r\n]+)/i);
 
       if (localIntfMatch && sysNameMatch && portIdMatch) {
         let remoteDevice = sysNameMatch[1].trim().split('.')[0];
@@ -165,15 +175,16 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       if (!inTable) continue;
       if (line.startsWith('Capability') || line.startsWith('Port ID')) continue;
       
-      // Broad regex to capture local interface (including mgmt, serial), holdtime, and remote port
-      const intfRegex = /(?:^|\s)([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+)\s+(\d+)\s+.*?\s+([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+|\S+)$/i;
+      // Broad regex to capture local interface (including mgmt, serial), holdtime (optional), and remote port
+      // This handles both Cisco (with holdtime) and HP/Huawei (without holdtime, just Local Intf and Port ID)
+      const intfRegex = /(?:^|\s)([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+)\s+(?:\d+\s+)?.*?\s+([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+|\S+)$/i;
       const match = line.match(intfRegex);
       
       if (match) {
         let remoteDevice = '';
         const firstToken = line.split(/\s+/)[0];
         const localPortFull = match[1];
-        const remotePortFull = match[3];
+        const remotePortFull = match[2];
         
         const isInterface = /^(Gi|Gig|Fa|Fas|Te|Ten|Twe|Fo|Hu|Eth|Po|Port|Ser|mgmt|Vl)/i.test(firstToken);
         
