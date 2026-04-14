@@ -71,9 +71,11 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     const pidMatch = blockData.match(/PID:\s*([A-Za-z0-9\-_]+)/i);
     const productMatch = blockData.match(/Product(?: Name| ID| Number)?\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
     const manuinfoMatch = blockData.match(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
+    const sysTypeMatch = blockData.match(/System Type\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
+    const modelMatch = blockData.match(/(?:Hardware Model|Model)\s*[:=]\s*([A-Za-z0-9\-_]+)/i);
     
     // 2. Try specific known patterns in show version or other outputs
-    const specificMatch = blockData.match(/(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|(?:MX|S|Z|N)\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)/i);
+    const specificMatch = blockData.match(/\b(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|MX\d{4,}[\w\-]*|S\d{4,}[\w\-]*|Z\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)\b/i);
 
     if (pidMatch) {
         hwModel = pidMatch[1].trim();
@@ -81,6 +83,10 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         hwModel = productMatch[1].trim();
     } else if (manuinfoMatch) {
         hwModel = manuinfoMatch[1].trim();
+    } else if (sysTypeMatch) {
+        hwModel = sysTypeMatch[1].trim();
+    } else if (modelMatch) {
+        hwModel = modelMatch[1].trim();
     } else if (specificMatch) {
         hwModel = specificMatch[1].trim();
     } else {
@@ -112,7 +118,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     for (const block of cdpBlocks) {
       const deviceIdMatch = block.match(/^\s*([^\r\n]+)/);
       const interfaceMatch = block.match(/Interface:\s*([^,]+),\s*Port ID \(outgoing port\):\s*([^\r\n]+)/i);
-      const ipMatch = block.match(/IP address:\s*([0-9.]+)/i);
+      const ipMatch = block.match(/IP address:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})/i);
       const platformMatch = block.match(/Platform:\s*([^,]+)/i);
 
       if (deviceIdMatch && interfaceMatch) {
@@ -148,7 +154,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       const localIntfMatch = block.match(/Local Intf:\s*([^\r\n]+)/i) || block.match(/Local Interface\s*[:]?\s*([^\r\n]+)/i) || block.match(/LLDP neighbor-information of port.*?\[([^\]]+)\]/i) || block.match(/LLDP neighbor-information of port\s+([^\s\[:]+)/i);
       const sysNameMatch = block.match(/System Name\s*[:=]\s*([^\r\n]+)/i);
       const portIdMatch = block.match(/Port id\s*[:=]\s*([^\r\n]+)/i);
-      const ipMatch = block.match(/Management address\s*[:=]\s*([0-9.]+)/i) || block.match(/IP\s*[:=]\s*([0-9.]+)/i) || block.match(/IPv4 address\s*[:=]\s*([0-9.]+)/i);
+      const ipMatch = block.match(/Management address\s*[:=]\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})/i) || block.match(/IP\s*[:=]\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})/i) || block.match(/IPv4 address\s*[:=]\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})/i);
       const descMatch = block.match(/System Description\s*[:=]\s*([^\r\n]+)/i);
 
       if (localIntfMatch && sysNameMatch && portIdMatch) {
