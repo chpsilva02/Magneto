@@ -197,41 +197,35 @@ export function generateDrawioXml(topology: TopologyData): string {
 
       const nodeA = nodeMap.get(link.source);
       const nodeB = nodeMap.get(link.target);
-      if (nodeA && nodeB) {
+      if (nodeA && nodeB && totalLinks > 1) {
         const ax = nodeA.x || 0;
         const ay = nodeA.y || 0;
         const bx = nodeB.x || 0;
         const by = nodeB.y || 0;
         
-        const dx = bx - ax;
-        const dy = by - ay;
-        
-        let offset = 0.5;
-        if (totalLinks > 1) {
-          const step = 0.8 / totalLinks;
-          offset = 0.1 + (step / 2) + (linkIndex * step);
-        }
+        // Center of nodes (assuming 60x60 size)
+        const cxA = ax + 30;
+        const cyA = ay + 30;
+        const cxB = bx + 30;
+        const cyB = by + 30;
 
-        let exitX = 0.5, exitY = 0.5, entryX = 0.5, entryY = 0.5;
+        const dx = cxB - cxA;
+        const dy = cyB - cyA;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
-        if (Math.abs(dx) > Math.abs(dy)) {
-          // Horizontal alignment
-          if (dx > 0) {
-            exitX = 1; exitY = offset; entryX = 0; entryY = offset;
-          } else {
-            exitX = 0; exitY = offset; entryX = 1; entryY = offset;
-          }
-        } else {
-          // Vertical alignment
-          if (dy > 0) {
-            exitX = offset; exitY = 1; entryX = offset; entryY = 0;
-          } else {
-            exitX = offset; exitY = 0; entryX = offset; entryY = 1;
-          }
-        }
-        
-        // Use straight lines that don't overlap by specifying exact exit/entry points
-        edge.att('style', edgeStyle + `exitX=${exitX};exitY=${exitY};exitPerimeter=0;entryX=${entryX};entryY=${entryY};entryPerimeter=0;`);
+        // Perpendicular vector
+        const nx = -dy / len;
+        const ny = dx / len;
+
+        // Offset distance (25 pixels between each line)
+        const spacing = 25;
+        const offsetDist = (linkIndex - (totalLinks - 1) / 2) * spacing;
+
+        const midX = cxA + dx / 2 + nx * offsetDist;
+        const midY = cyA + dy / 2 + ny * offsetDist;
+
+        const array = geometry.ele('Array', { as: 'points' });
+        array.ele('mxPoint', { x: Math.round(midX).toString(), y: Math.round(midY).toString() });
       }
 
       const formatStpPort = (port: string, role?: string, state?: string) => {

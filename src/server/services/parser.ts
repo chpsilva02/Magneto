@@ -77,15 +77,17 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         let localPort = normalizePort(interfaceMatch[1].trim());
         let remotePort = normalizePort(interfaceMatch[2].trim());
         
-        db.insertPhysicalLink(
-          hostname,
-          localPort,
-          remoteDevice,
-          remotePort,
-          'cdp',
-          ipMatch ? ipMatch[1].trim() : undefined,
-          platformMatch ? platformMatch[1].trim() : undefined
-        );
+        if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+          db.insertPhysicalLink(
+            hostname,
+            localPort,
+            remoteDevice,
+            remotePort,
+            'cdp',
+            ipMatch ? ipMatch[1].trim() : undefined,
+            platformMatch ? platformMatch[1].trim() : undefined
+          );
+        }
       }
     }
 
@@ -96,20 +98,30 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       const sysNameMatch = block.match(/System Name:\s*([^\r\n]+)/i);
       const portIdMatch = block.match(/Port id:\s*([^\r\n]+)/i);
       const ipMatch = block.match(/Management address:\s*([0-9.]+)/i) || block.match(/IP:\s*([0-9.]+)/i);
+      const descMatch = block.match(/System Description:\s*([^\r\n]+)/i);
 
       if (localIntfMatch && sysNameMatch && portIdMatch) {
         let remoteDevice = sysNameMatch[1].trim().split('.')[0];
         let localPort = normalizePort(localIntfMatch[1].trim());
         let remotePort = normalizePort(portIdMatch[1].trim());
 
-        db.insertPhysicalLink(
-          hostname,
-          localPort,
-          remoteDevice,
-          remotePort,
-          'lldp',
-          ipMatch ? ipMatch[1].trim() : undefined
-        );
+        let remoteModel = undefined;
+        if (descMatch) {
+          const hwMatch = descMatch[1].match(/(?:Hardware:\s*|Platform:\s*|Cisco\s+)([^,]+)/i);
+          remoteModel = hwMatch ? hwMatch[1].trim() : descMatch[1].substring(0, 40).trim();
+        }
+
+        if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+          db.insertPhysicalLink(
+            hostname,
+            localPort,
+            remoteDevice,
+            remotePort,
+            'lldp',
+            ipMatch ? ipMatch[1].trim() : undefined,
+            remoteModel
+          );
+        }
       }
     }
 
@@ -137,17 +149,17 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       if (!inTable) continue;
       if (line.startsWith('Capability') || line.startsWith('Port ID')) continue;
       
-      // Strict regex for local interface to avoid matching VLANs or MAC addresses
-      const intfRegex = /(?:^|\s)(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Port-channel)\s*([\d\/\.]+)\s+\d+\s+.*?\s+([A-Za-z]*\s*[\d\/\.]+|eth\d+|mgmt\d+|\S+)$/i;
+      // Broad regex to capture local interface (including mgmt, serial), holdtime, and remote port
+      const intfRegex = /(?:^|\s)([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+)\s+(\d+)\s+.*?\s+([A-Za-z\-]+\s*[A-Za-z0-9\/\.]+|\S+)$/i;
       const match = line.match(intfRegex);
       
       if (match) {
         let remoteDevice = '';
         const firstToken = line.split(/\s+/)[0];
-        const localPortFull = match[1] + match[2];
+        const localPortFull = match[1];
         const remotePortFull = match[3];
         
-        const isInterface = /^(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Port-channel)/i.test(firstToken);
+        const isInterface = /^(Gi|Gig|Fa|Fas|Te|Ten|Twe|Fo|Hu|Eth|Po|Port|Ser|mgmt|Vl)/i.test(firstToken);
         
         if (isInterface) {
           remoteDevice = pendingDevice;
@@ -160,13 +172,15 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
           let localPort = normalizePort(localPortFull);
           let remotePort = normalizePort(remotePortFull);
           
-          db.insertPhysicalLink(
-            hostname,
-            localPort,
-            remoteDevice,
-            remotePort,
-            'cdp/lldp'
-          );
+          if (!/^(Po|Port-channel|Vl|Vlan)/i.test(localPort) && !/^(Po|Port-channel|Vl|Vlan)/i.test(remotePort)) {
+            db.insertPhysicalLink(
+              hostname,
+              localPort,
+              remoteDevice,
+              remotePort,
+              'cdp/lldp'
+            );
+          }
         }
         pendingDevice = '';
       } else {
