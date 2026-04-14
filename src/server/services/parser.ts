@@ -36,7 +36,7 @@ function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'd
 
 function isValidDeviceName(name: string): boolean {
   if (!name) return false;
-  if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info)$/i.test(name)) return false;
+  if (/^(System|Device|Local|Port|Capability|Interface|Total|Entries|None|Unknown|ID|Name|Mac|IP|Address|LLDP|CDP|Detail|Info|Time|Chassis|Update|Index)$/i.test(name)) return false;
   if (/^\d+$/.test(name)) return false; // purely numeric like "7"
   return true;
 }
@@ -57,9 +57,16 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
 
   function parseBlock(hostname: string, blockData: string) {
     let hwModel = 'Unknown';
-    const hwMatch = blockData.match(/(?:cisco|hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
-    if (hwMatch && hwMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(hwMatch[1])) {
-      hwModel = hwMatch[1].trim();
+    // Try specific known patterns first for high accuracy
+    const specificMatch = blockData.match(/(WS-C\w+|C\d{4,}|Nexus\s*\d+|ISR\d+|ASR\d+|FPR\d+|SRX\d+|MX\d{4,}|S\d{4,}|NE\d{2,}|125\d{2})/i);
+    if (specificMatch) {
+        hwModel = specificMatch[1].trim();
+    } else {
+        // Fallback to generic pattern
+        const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+)/i);
+        if (genericMatch && genericMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(genericMatch[1])) {
+            hwModel = genericMatch[1].trim();
+        }
     }
     
     const isRoot = /This bridge is the root/i.test(blockData);
@@ -298,7 +305,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
   }
 
-  const fileBlocks = rawData.split(/--- FILE: ([^-]+) ---\n/);
+  const fileBlocks = rawData.split(/--- FILE: (.*?) ---\n/g);
   if (fileBlocks.length > 1) {
     for (let f = 1; f < fileBlocks.length; f += 2) {
       let filename = fileBlocks[f].trim().replace(/\.[^/.]+$/, ""); // remove extension
@@ -308,12 +315,20 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       if (parts.length === 1) {
         parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', fileContent);
       } else {
+        let foundValidPrompt = false;
         for (let i = 1; i < parts.length; i += 2) {
           let hostname = parts[i].split('.')[0];
-          if (!isValidDeviceName(hostname)) {
-            hostname = isValidDeviceName(filename) ? filename : 'Unknown-Device';
+          if (isValidDeviceName(hostname)) {
+            foundValidPrompt = true;
+            parseBlock(hostname, parts[i+1]);
+          } else {
+            // If prompt is invalid, fallback to filename
+            parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', parts[i+1]);
           }
-          parseBlock(hostname, parts[i+1]);
+        }
+        // If we didn't find any valid prompt in the whole file, just parse the whole content under the filename
+        if (!foundValidPrompt && parts.length > 1) {
+            parseBlock(isValidDeviceName(filename) ? filename : 'Unknown-Device', fileContent);
         }
       }
     }
