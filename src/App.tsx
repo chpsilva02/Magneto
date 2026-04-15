@@ -1,505 +1,477 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Search, Download, Server, Network, Layers, Terminal, ChevronDown, ChevronUp, FileText, AlertCircle, Sun, Moon, CheckCircle2, Copy, XCircle, Monitor } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import {
+  Upload, Search, Download, Network, Layers, Terminal,
+  ChevronDown, ChevronUp, FileText, AlertCircle, CheckCircle2,
+  Copy, XCircle, Zap, Server, Shield, Globe, GitBranch,
+  Activity, Settings, Eye, EyeOff, Sun, Moon, Monitor
+} from 'lucide-react';
 
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
+// ─────────────────────────────────────────────────────────────────────────────
+// TINY UTILITIES
+// ─────────────────────────────────────────────────────────────────────────────
+function cn(...classes: (string | boolean | undefined | null)[]): string {
+  return classes.filter(Boolean).join(' ');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+type Tab    = 'discovery' | 'upload';
+type Theme  = 'light' | 'dark';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATIC DATA
+// ─────────────────────────────────────────────────────────────────────────────
+const VENDORS = [
+  { value: 'cisco_ios',    label: 'Cisco IOS-XE' },
+  { value: 'cisco_nxos',  label: 'Cisco NX-OS' },
+  { value: 'aruba_os',    label: 'HP/HPE Aruba' },
+  { value: 'hpe_comware', label: 'HPE Comware' },
+  { value: 'juniper_junos', label: 'Juniper JunOS' },
+  { value: 'huawei_vrp',  label: 'Huawei VRP' },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED INPUT STYLES
+// ─────────────────────────────────────────────────────────────────────────────
+const inputCls = [
+  'w-full rounded-lg border border-slate-300 dark:border-slate-700',
+  'bg-white dark:bg-slate-900',
+  'px-4 py-2.5 text-sm text-slate-900 dark:text-slate-100',
+  'focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:focus:ring-cyan-400',
+  'focus:border-transparent transition-all placeholder:text-slate-400',
+].join(' ');
+
+const labelCls = 'block text-xs font-semibold tracking-widest uppercase text-slate-500 dark:text-slate-400 mb-1.5';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUB-COMPONENTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function LayerPill({ label, color }: { label: string; color: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full ${color}`}>
+      {label}
+    </span>
+  );
+}
+
+function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl px-4 py-3 border border-slate-200 dark:border-slate-700">
+      <div className="text-cyan-500 dark:text-cyan-400">{icon}</div>
+      <div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">{label}</p>
+        <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <h3 className="flex items-center gap-2 text-sm font-bold tracking-wider uppercase text-slate-600 dark:text-slate-300 mb-3">
+      <span className="text-cyan-500">{icon}</span>
+      {children}
+    </h3>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN APP
+// ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'discovery' | 'upload'>('discovery');
-  const [vendor, setVendor] = useState('cisco_ios');
-  const [ip, setIp] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [files, setFiles] = useState<FileList | null>(null);
+  // ── state ──────────────────────────────────────────────────────────
+  const [activeTab,      setActiveTab]      = useState<Tab>('discovery');
+  const [vendor,         setVendor]         = useState('cisco_ios');
+  const [ip,             setIp]             = useState('');
+  const [username,       setUsername]       = useState('');
+  const [password,       setPassword]       = useState('');
+  const [showPw,         setShowPw]         = useState(false);
+  const [files,          setFiles]          = useState<FileList | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [loading, setLoading] = useState(false);
-  const [resultXml, setResultXml] = useState<string | null>(null);
-  const [rawOutputs, setRawOutputs] = useState<Record<string, string> | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const [profiles, setProfiles] = useState<Record<string, any> | null>(null);
-  const [showCommands, setShowCommands] = useState(false);
+  const [loading,        setLoading]        = useState(false);
+  const [resultXml,      setResultXml]      = useState<string | null>(null);
+  const [rawOutputs,     setRawOutputs]     = useState<Record<string, string> | null>(null);
+  const [errorMsg,       setErrorMsg]       = useState<string | null>(null);
+  const [profiles,       setProfiles]       = useState<Record<string, any> | null>(null);
+  const [showCommands,   setShowCommands]   = useState(false);
   const [showRawOutputs, setShowRawOutputs] = useState(false);
-  
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+  const [topology,       setTopology]       = useState<any | null>(null);
+  const [theme,          setTheme]          = useState<Theme>(() => {
     if (typeof window !== 'undefined') {
-      const savedTheme = localStorage.getItem('theme');
-      if (savedTheme === 'light' || savedTheme === 'dark') {
-        return savedTheme;
-      }
+      const saved = localStorage.getItem('theme');
+      if (saved === 'light' || saved === 'dark') return saved as Theme;
     }
-    return 'light';
+    return 'dark';
   });
-  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
+  const [commandText, setCommandText] = useState({ l1: '', l2: '', l3: '', hardware: '' });
 
-  const [commandText, setCommandText] = useState({
-    l1: '', l2: '', l3: '', hardware: ''
-  });
-
+  // ── effects ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const root = window.document.documentElement;
-    root.classList.remove('light', 'dark');
-    root.classList.add(theme);
+    document.documentElement.classList.remove('light', 'dark');
+    document.documentElement.classList.add(theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
 
   useEffect(() => {
     fetch('/api/profiles')
-      .then(res => res.json())
+      .then(r => r.json())
       .then(data => {
         setProfiles(data);
-        const saved = localStorage.getItem(`magneto_commands_cisco_ios`);
+        const saved = localStorage.getItem('magneto_commands_cisco_ios');
         if (saved) {
           setCommandText(JSON.parse(saved));
         } else if (data['cisco_ios']) {
-          setCommandText({
-            l1: data['cisco_ios'].l1.join('\n'),
-            l2: data['cisco_ios'].l2.join('\n'),
-            l3: data['cisco_ios'].l3.join('\n'),
-            hardware: data['cisco_ios'].hardware.join('\n'),
-          });
+          const p = data['cisco_ios'];
+          setCommandText({ l1: p.l1.join('\n'), l2: p.l2.join('\n'), l3: p.l3.join('\n'), hardware: p.hardware.join('\n') });
         }
-      });
+      })
+      .catch(() => {});
   }, []);
 
-  const handleVendorChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
+  // ── handlers ────────────────────────────────────────────────────────
+  const handleVendorChange = (v: string) => {
     setVendor(v);
     const saved = localStorage.getItem(`magneto_commands_${v}`);
     if (saved) {
       setCommandText(JSON.parse(saved));
-    } else if (profiles && profiles[v]) {
-      setCommandText({
-        l1: profiles[v].l1.join('\n'),
-        l2: profiles[v].l2.join('\n'),
-        l3: profiles[v].l3.join('\n'),
-        hardware: profiles[v].hardware.join('\n'),
-      });
+    } else if (profiles?.[v]) {
+      const p = profiles[v];
+      setCommandText({ l1: p.l1.join('\n'), l2: p.l2.join('\n'), l3: p.l3.join('\n'), hardware: p.hardware.join('\n') });
     }
   };
 
   const handleSaveCommands = () => {
     localStorage.setItem(`magneto_commands_${vendor}`, JSON.stringify(commandText));
-    alert('Comandos salvos com sucesso!');
+  };
+
+  const handleClear = () => {
+    setIp(''); setUsername(''); setPassword('');
+    setFiles(null); setResultXml(null); setRawOutputs(null);
+    setErrorMsg(null); setTopology(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleDiscovery = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    setErrorMsg(null);
-    setResultXml(null);
-    setRawOutputs(null);
-    
+    setLoading(true); setErrorMsg(null); setResultXml(null); setRawOutputs(null); setTopology(null);
     const customCommands = {
-      l1: commandText.l1.split('\n').filter(c => c.trim() !== ''),
-      l2: commandText.l2.split('\n').filter(c => c.trim() !== ''),
-      l3: commandText.l3.split('\n').filter(c => c.trim() !== ''),
-      hardware: commandText.hardware.split('\n').filter(c => c.trim() !== ''),
+      l1: commandText.l1.split('\n').filter(c => c.trim()),
+      l2: commandText.l2.split('\n').filter(c => c.trim()),
+      l3: commandText.l3.split('\n').filter(c => c.trim()),
+      hardware: commandText.hardware.split('\n').filter(c => c.trim()),
     };
-
     try {
-      const res = await fetch('/api/discovery', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res  = await fetch('/api/discovery', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip, username, password, vendor, customCommands }),
       });
-      
       const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro desconhecido na descoberta');
-      }
-      
-      setResultXml(data.xml);
-      setRawOutputs(data.rawOutputs);
-    } catch (error: any) {
-      console.error(error);
-      setErrorMsg(error.message);
-    } finally {
-      setLoading(false);
-    }
+      if (!res.ok) throw new Error(data.error || 'Erro desconhecido');
+      setResultXml(data.xml); setRawOutputs(data.rawOutputs); setTopology(data.topology);
+    } catch (err: any) { setErrorMsg(err.message); }
+    finally { setLoading(false); }
   };
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!files || files.length === 0) return;
-    setLoading(true);
-    setErrorMsg(null);
-    setResultXml(null);
-    setRawOutputs(null);
+    setLoading(true); setErrorMsg(null); setResultXml(null); setRawOutputs(null); setTopology(null);
     try {
-      const formData = new FormData();
-      formData.append('vendor', vendor);
-      Array.from(files).forEach((file: File) => {
-        formData.append('files', file);
-      });
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const fd = new FormData();
+      fd.append('vendor', vendor);
+      Array.from(files).forEach(f => fd.append('files', f));
+      const res  = await fetch('/api/upload', { method: 'POST', body: fd });
       const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro desconhecido no upload');
-      }
-      
-      setResultXml(data.xml);
-    } catch (error: any) {
-      console.error(error);
-      setErrorMsg(error.message);
-    } finally {
-      setLoading(false);
-    }
+      if (!res.ok) throw new Error(data.error || 'Erro desconhecido');
+      setResultXml(data.xml); setTopology(data.topology);
+    } catch (err: any) { setErrorMsg(err.message); }
+    finally { setLoading(false); }
   };
 
   const downloadDrawio = () => {
     if (!resultXml) return;
-    const blob = new Blob([resultXml], { type: 'application/xml' });
-    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = URL.createObjectURL(new Blob([resultXml], { type: 'application/xml' }));
     a.download = 'topology.drawio';
-    document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   const downloadRawOutputs = () => {
     if (!rawOutputs) return;
-    
-    let textContent = '';
-    for (const [cmd, output] of Object.entries(rawOutputs)) {
-      textContent += `================================================================\n`;
-      textContent += `COMMAND: ${cmd}\n`;
-      textContent += `================================================================\n`;
-      textContent += `${output}\n\n`;
-    }
-    
-    const blob = new Blob([textContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
+    let text = '';
+    for (const [cmd, out] of Object.entries(rawOutputs))
+      text += `${'='.repeat(64)}\nCOMMAND: ${cmd}\n${'='.repeat(64)}\n${out}\n\n`;
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `raw_outputs_${ip.replace(/\./g, '_')}.txt`;
-    document.body.appendChild(a);
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = `raw_outputs_${ip.replace(/\./g,'_')}.txt`;
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   const copyToClipboard = async () => {
     if (!rawOutputs) return;
-    
-    let textContent = '';
-    for (const [cmd, output] of Object.entries(rawOutputs)) {
-      textContent += `================================================================\n`;
-      textContent += `COMMAND: ${cmd}\n`;
-      textContent += `================================================================\n`;
-      textContent += `${output}\n\n`;
-    }
-    
-    try {
-      await navigator.clipboard.writeText(textContent);
-      // Could add a toast here, but for now just a simple alert or silent success
-      alert('Logs copiados para a área de transferência!');
-    } catch (err) {
-      console.error('Failed to copy text: ', err);
-      alert('Erro ao copiar logs.');
-    }
+    let text = '';
+    for (const [cmd, out] of Object.entries(rawOutputs))
+      text += `${'='.repeat(64)}\nCOMMAND: ${cmd}\n${'='.repeat(64)}\n${out}\n\n`;
+    try { await navigator.clipboard.writeText(text); } catch {}
   };
 
-  const handleClear = () => {
-    setIp('');
-    setUsername('');
-    setPassword('');
-    setFiles(null);
-    setResultXml(null);
-    setRawOutputs(null);
-    setErrorMsg(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
+  // ── topology stats ────────────────────────────────────────────────
+  const nodeCount = topology?.nodes?.length ?? 0;
+  const linkCount = topology?.links?.length ?? 0;
+  const l1Count   = topology?.links?.filter((l: any) => l.layer === 'L1').length ?? 0;
+  const l2Count   = topology?.links?.filter((l: any) => l.layer === 'L2').length ?? 0;
+  const l3Count   = topology?.links?.filter((l: any) => l.layer === 'L3').length ?? 0;
 
+  // ─────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors duration-300">
-      {/* Header */}
-      <header className="bg-indigo-600 dark:bg-indigo-900 text-white shadow-md sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3">
-          <Network className="w-8 h-8" />
-          <h1 className="text-2xl font-bold tracking-tight">Magneto</h1>
-          <span className="hidden sm:inline-block ml-4 text-indigo-200 dark:text-indigo-300 text-sm font-medium border-l border-indigo-500 pl-4">
-            L1, L2 & L3 Topology Generator
-          </span>
-          
-          <div className="relative ml-auto">
-            <button 
-              onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
-              className="p-2 rounded-full hover:bg-white/10 transition-colors flex items-center gap-2"
-              title="Alterar Tema"
-            >
-              {theme === 'light' && <Sun className="w-5 h-5" />}
-              {theme === 'dark' && <Moon className="w-5 h-5" />}
-            </button>
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors duration-300">
 
-            {isThemeMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setIsThemeMenuOpen(false)} />
-                <div className="absolute right-0 mt-2 w-36 bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-200 dark:border-slate-700 overflow-hidden z-50 py-1">
-                  <button
-                    onClick={() => { setTheme('light'); setIsThemeMenuOpen(false); }}
-                    className={cn("w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors", theme === 'light' ? "text-indigo-600 dark:text-indigo-400 font-medium" : "text-slate-700 dark:text-slate-300")}
-                  >
-                    <Sun className="w-4 h-4" /> Claro
-                  </button>
-                  <button
-                    onClick={() => { setTheme('dark'); setIsThemeMenuOpen(false); }}
-                    className={cn("w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors", theme === 'dark' ? "text-indigo-600 dark:text-indigo-400 font-medium" : "text-slate-700 dark:text-slate-300")}
-                  >
-                    <Moon className="w-4 h-4" /> Escuro
-                  </button>
-                </div>
-              </>
-            )}
+      {/* ── HEADER ────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-20 border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-950/90 backdrop-blur-md">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center gap-4">
+          {/* Logo mark */}
+          <div className="flex items-center gap-2.5 flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-cyan-500 flex items-center justify-center shadow-lg shadow-cyan-500/30">
+              <Zap className="w-5 h-5 text-white" />
+            </div>
+            <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white">
+              Magn<span className="text-cyan-500">eto</span>
+            </span>
           </div>
+
+          <div className="hidden sm:flex items-center gap-2 ml-2 pl-4 border-l border-slate-200 dark:border-slate-700">
+            <LayerPill label="L1 Física"      color="bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300" />
+            <LayerPill label="L2 Lógica"      color="bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300" />
+            <LayerPill label="L3 Roteamento"  color="bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300" />
+          </div>
+
+          {/* spacer */}
+          <div className="flex-1" />
+
+          {/* Theme toggle */}
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-slate-500 dark:text-slate-400"
+            title="Alternar tema"
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8">
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden transition-colors duration-300">
-          {/* Tabs */}
+      {/* ── MAIN ──────────────────────────────────────────────────── */}
+      <main className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+
+        {/* ── HERO ───────────────────────────────────────────────── */}
+        <div className="text-center space-y-2 pb-2">
+          <h1 className="text-3xl font-black tracking-tight text-slate-900 dark:text-white">
+            Network Topology Generator
+          </h1>
+          <p className="text-slate-500 dark:text-slate-400 text-sm max-w-xl mx-auto">
+            Gere diagramas draw.io com 3 camadas (L1 Física · L2 Lógica · L3 Roteamento) a partir de SSH ou arquivos de coleta.
+          </p>
+        </div>
+
+        {/* ── CARD ───────────────────────────────────────────────── */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+
+          {/* TABS */}
           <div className="flex border-b border-slate-200 dark:border-slate-800">
-            <button
-              onClick={() => setActiveTab('discovery')}
-              className={cn(
-                "flex-1 py-4 px-6 text-sm font-semibold flex items-center justify-center gap-2 transition-colors",
-                activeTab === 'discovery' 
-                  ? "border-b-2 border-indigo-600 dark:border-indigo-400 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-900/20" 
-                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50"
-              )}
-            >
-              <Search className="w-4 h-4" />
-              Discovery Ativo (SSH/Telnet)
-            </button>
-            <button
-              onClick={() => setActiveTab('upload')}
-              className={cn(
-                "flex-1 py-4 px-6 text-sm font-semibold flex items-center justify-center gap-2 transition-colors",
-                activeTab === 'upload' 
-                  ? "border-b-2 border-indigo-600 dark:border-indigo-400 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-900/20" 
-                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50"
-              )}
-            >
-              <Upload className="w-4 h-4" />
-              Upload de Arquivos (Offline)
-            </button>
+            {([
+              { id: 'discovery', icon: <Search className="w-4 h-4" />, label: 'Discovery Ativo (SSH)' },
+              { id: 'upload',    icon: <Upload  className="w-4 h-4" />, label: 'Upload Offline' },
+            ] as const).map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  'flex-1 py-4 px-6 text-sm font-semibold flex items-center justify-center gap-2 transition-all',
+                  activeTab === tab.id
+                    ? 'border-b-2 border-cyan-500 text-cyan-600 dark:text-cyan-400 bg-cyan-50/50 dark:bg-cyan-900/10'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                )}
+              >
+                {tab.icon} {tab.label}
+              </button>
+            ))}
           </div>
 
           <div className="p-8">
-            {/* Error Message */}
+            {/* ERROR */}
             {errorMsg && (
-              <div className="mb-8 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-4 flex items-start gap-3 text-red-800 dark:text-red-300 animate-in fade-in slide-in-from-top-2">
+              <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl p-4 flex items-start gap-3 text-red-700 dark:text-red-300 animate-in fade-in slide-in-from-top-2">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
                 <div>
-                  <h3 className="font-semibold mb-1">Erro na Execução</h3>
-                  <p className="text-sm">{errorMsg}</p>
+                  <p className="font-bold text-sm mb-0.5">Erro na Execução</p>
+                  <p className="text-sm opacity-80">{errorMsg}</p>
                 </div>
               </div>
             )}
 
-            {/* Discovery Form */}
+            {/* ── DISCOVERY FORM ──────────────────────────────────── */}
             {activeTab === 'discovery' && (
-              <form onSubmit={handleDiscovery} className="space-y-6 max-w-2xl animate-in fade-in">
-                {/* Common Vendor Select */}
-                <div className="max-w-md">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    Vendor / OS
-                  </label>
+              <form onSubmit={handleDiscovery} className="space-y-6 max-w-2xl">
+
+                {/* Vendor / OS — only in Discovery */}
+                <div className="max-w-xs">
+                  <label className={labelCls}>Vendor / OS</label>
                   <select
                     value={vendor}
-                    onChange={handleVendorChange}
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
+                    onChange={e => handleVendorChange(e.target.value)}
+                    className={inputCls}
                   >
-                    <option value="cisco_ios">Cisco IOS-XE</option>
-                    <option value="cisco_nxos">Cisco NX-OS</option>
-                    <option value="aruba_os">HP/HPE Aruba Switches</option>
-                    <option value="hpe_comware">HPE Comware</option>
-                    <option value="juniper_junos">Juniper Junos</option>
-                    <option value="huawei_vrp">Huawei VRP</option>
+                    {VENDORS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
                   </select>
                 </div>
 
-                <div className="max-w-md">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    Endereço(s) IP (Seed)
-                  </label>
+                {/* IP */}
+                <div>
+                  <label className={labelCls}>Endereço(s) IP Seed</label>
                   <input
-                    type="text"
-                    required
-                    value={ip}
-                    onChange={(e) => setIp(e.target.value)}
-                    placeholder="Ex: 10.0.0.1, 10.0.0.2"
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
+                    type="text" required value={ip}
+                    onChange={e => setIp(e.target.value)}
+                    placeholder="10.0.0.1, 10.0.0.2"
+                    className={inputCls}
                   />
+                  <p className="mt-1 text-xs text-slate-400">Separe múltiplos IPs por vírgula ou espaço.</p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md">
+
+                {/* Credentials */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                      Usuário
-                    </label>
+                    <label className={labelCls}>Usuário</label>
                     <input
-                      type="text"
-                      required
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
+                      type="text" required value={username}
+                      onChange={e => setUsername(e.target.value)}
+                      placeholder="admin"
+                      className={inputCls}
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                      Senha
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-950 px-4 py-2.5 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 focus:border-indigo-600 dark:focus:border-indigo-500 outline-none transition-all"
-                    />
+                    <label className={labelCls}>Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showPw ? 'text' : 'password'} required value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className={cn(inputCls, 'pr-10')}
+                      />
+                      <button
+                        type="button" onClick={() => setShowPw(p => !p)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                      >
+                        {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                {/* Commands Section */}
-                <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden mt-6 transition-colors">
+                {/* Commands accordion */}
+                <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setShowCommands(!showCommands)}
-                    className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-sm font-semibold text-slate-700 dark:text-slate-300"
+                    onClick={() => setShowCommands(s => !s)}
+                    className="w-full flex items-center justify-between px-5 py-3.5 bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-sm font-semibold text-slate-600 dark:text-slate-300"
                   >
-                    <div className="flex items-center gap-2">
-                      <Terminal className="w-4 h-4" />
-                      Personalizar Comandos (Command Profiles)
-                    </div>
+                    <span className="flex items-center gap-2">
+                      <Settings className="w-4 h-4" />
+                      Command Profiles — Personalizar Comandos
+                    </span>
                     {showCommands ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>
-                  
+
                   {showCommands && (
-                    <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-4 animate-in slide-in-from-top-2">
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-400 mb-1">Layer 1 (Física)</label>
-                        <textarea
-                          rows={3}
-                          value={commandText.l1}
-                          onChange={(e) => setCommandText({ ...commandText, l1: e.target.value })}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 outline-none font-mono"
-                          placeholder="Um comando por linha"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-400 mb-1">Layer 2 (Lógica)</label>
-                        <textarea
-                          rows={3}
-                          value={commandText.l2}
-                          onChange={(e) => setCommandText({ ...commandText, l2: e.target.value })}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 outline-none font-mono"
-                          placeholder="Um comando por linha"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-400 mb-1">Layer 3 (Roteamento)</label>
-                        <textarea
-                          rows={3}
-                          value={commandText.l3}
-                          onChange={(e) => setCommandText({ ...commandText, l3: e.target.value })}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 outline-none font-mono"
-                          placeholder="Um comando por linha"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-400 mb-1">Hardware / OS</label>
-                        <textarea
-                          rows={3}
-                          value={commandText.hardware}
-                          onChange={(e) => setCommandText({ ...commandText, hardware: e.target.value })}
-                          className="w-full rounded-lg border border-slate-300 dark:border-slate-700 shadow-sm bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-600 dark:focus:ring-indigo-500 outline-none font-mono"
-                          placeholder="Um comando por linha"
-                        />
-                      </div>
-                      <div className="sm:col-span-2 flex justify-end mt-2">
+                    <div className="p-5 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white dark:bg-slate-900 animate-in slide-in-from-top-2">
+                      {([
+                        { key: 'l1', label: 'Layer 1 — Física', pill: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' },
+                        { key: 'l2', label: 'Layer 2 — Lógica', pill: 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' },
+                        { key: 'l3', label: 'Layer 3 — Roteamento', pill: 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300' },
+                        { key: 'hardware', label: 'Hardware / OS', pill: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300' },
+                      ] as const).map(({ key, label, pill }) => (
+                        <div key={key}>
+                          <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
+                            <LayerPill label={label} color={pill} />
+                          </label>
+                          <textarea
+                            rows={4}
+                            value={commandText[key]}
+                            onChange={e => setCommandText({ ...commandText, [key]: e.target.value })}
+                            className={cn(inputCls, 'font-mono text-xs resize-none')}
+                            placeholder="Um comando por linha"
+                          />
+                        </div>
+                      ))}
+                      <div className="sm:col-span-2 flex justify-end">
                         <button
-                          type="button"
-                          onClick={handleSaveCommands}
-                          className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-800 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                          type="button" onClick={handleSaveCommands}
+                          className="text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-4 py-2 rounded-lg transition-colors"
                         >
-                          Salvar Comandos
+                          Salvar Perfil
                         </button>
                       </div>
                     </div>
                   )}
                 </div>
 
+                {/* Submit */}
                 <button
                   type="submit"
                   disabled={loading || !ip || !username || !password}
-                  className="w-full max-w-md bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
+                  className="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-8 rounded-xl transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
                 >
                   {loading ? (
-                    <span className="animate-pulse flex items-center gap-2">
-                      <Network className="w-5 h-5 animate-spin" />
-                      Analisando rede...
-                    </span>
+                    <><Activity className="w-5 h-5 animate-pulse" /> Analisando rede...</>
                   ) : (
-                    <>
-                      <Search className="w-5 h-5" />
-                      Iniciar Discovery
-                    </>
+                    <><Search className="w-5 h-5" /> Iniciar Discovery</>
                   )}
                 </button>
               </form>
             )}
 
-            {/* Upload Form */}
+            {/* ── UPLOAD FORM ─────────────────────────────────────── */}
             {activeTab === 'upload' && (
-              <form onSubmit={handleUpload} className="space-y-6 max-w-xl animate-in fade-in">
-                <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-10 text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                  <Server className="w-12 h-12 text-slate-400 dark:text-slate-500 mx-auto mb-4" />
-                  <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                    Arraste os arquivos de coleta (folder, .txt, .log) ou clique para selecionar.
+              <form onSubmit={handleUpload} className="space-y-6 max-w-xl">
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-12 text-center hover:border-cyan-400 dark:hover:border-cyan-500 hover:bg-cyan-50/30 dark:hover:bg-cyan-900/10 transition-all cursor-pointer group"
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 group-hover:bg-cyan-100 dark:group-hover:bg-cyan-900/30 flex items-center justify-center mx-auto mb-4 transition-colors">
+                    <Server className="w-7 h-7 text-slate-400 group-hover:text-cyan-500 transition-colors" />
+                  </div>
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Arraste uma pasta ou clique para selecionar arquivos
                   </p>
+                  <p className="text-xs text-slate-400">Pastas .txt, .log de coleta de comandos</p>
+
                   <input
-                    type="file"
-                    multiple
-                    {...{ webkitdirectory: "", directory: "" } as any}
+                    type="file" multiple
+                    {...{ webkitdirectory: '', directory: '' } as any}
                     ref={fileInputRef}
-                    onChange={(e) => setFiles(e.target.files)}
-                    className="block w-full text-sm text-slate-500 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 dark:file:bg-indigo-900/30 file:text-indigo-700 dark:file:text-indigo-400 hover:file:bg-indigo-100 dark:hover:file:bg-indigo-900/50 cursor-pointer transition-colors"
+                    onChange={e => setFiles(e.target.files)}
+                    className="hidden"
                   />
-                  {files && files.length > 0 && (
-                    <div className="mt-4 flex items-center justify-center gap-2 text-sm text-emerald-600 dark:text-emerald-400 font-medium">
-                      <CheckCircle2 className="w-4 h-4" />
-                      {files.length} arquivo(s) selecionado(s)
-                    </div>
-                  )}
                 </div>
+
+                {files && files.length > 0 && (
+                  <div className="flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="w-4 h-4" />
+                    {files.length} arquivo(s) selecionado(s)
+                  </div>
+                )}
+
                 <button
                   type="submit"
                   disabled={loading || !files || files.length === 0}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
+                  className="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-8 rounded-xl transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
                 >
                   {loading ? (
-                    <span className="animate-pulse flex items-center gap-2">
-                      <Layers className="w-5 h-5 animate-bounce" />
-                      Processando arquivos...
-                    </span>
+                    <><Layers className="w-5 h-5 animate-bounce" /> Processando...</>
                   ) : (
-                    <>
-                      <Layers className="w-5 h-5" />
-                      Gerar Topologia
-                    </>
+                    <><Layers className="w-5 h-5" /> Gerar Topologia</>
                   )}
                 </button>
               </form>
@@ -507,75 +479,96 @@ export default function App() {
           </div>
         </div>
 
-        {/* Results Area */}
+        {/* ── RESULTS ──────────────────────────────────────────────── */}
         {resultXml && (
-          <div className="mt-8 bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 dark:border-emerald-800/50 rounded-2xl p-8 text-center animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="w-16 h-16 bg-emerald-100 dark:bg-emerald-900/50 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Download className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+
+            {/* Success banner */}
+            <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center flex-shrink-0">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                </div>
+                <div className="flex-1">
+                  <h2 className="font-black text-lg text-emerald-900 dark:text-emerald-100 mb-1">
+                    Topologia Gerada com Sucesso
+                  </h2>
+                  <p className="text-sm text-emerald-700/70 dark:text-emerald-300/70">
+                    O arquivo contém 3 páginas — L1 Física, L2 Lógica e L3 Roteamento — com swim lanes hierárquicas e ícones Cisco 19 mapeados automaticamente.
+                  </p>
+                </div>
+              </div>
             </div>
-            <h2 className="text-2xl font-bold text-emerald-900 dark:text-emerald-100 mb-2">
-              Topologia Gerada com Sucesso!
-            </h2>
-            <p className="text-emerald-700 dark:text-emerald-300/80 mb-6">
-              O arquivo contém 3 abas (L1 Física, L2 Lógica e L3 Roteamento) com ícones mapeados automaticamente.
-            </p>
-            <div className="flex flex-col sm:flex-row justify-center gap-4">
+
+            {/* Stats row */}
+            {topology && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <StatCard icon={<Server className="w-4 h-4" />}     label="Dispositivos"   value={String(nodeCount)} />
+                <StatCard icon={<GitBranch className="w-4 h-4" />}  label="Links Totais"   value={String(linkCount)} />
+                <StatCard icon={<Shield className="w-4 h-4" />}     label="Links L1"       value={String(l1Count)} />
+                <StatCard icon={<Network className="w-4 h-4" />}    label="Links L2"       value={String(l2Count)} />
+                <StatCard icon={<Globe className="w-4 h-4" />}      label="Links L3"       value={String(l3Count)} />
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap gap-3">
               <button
                 onClick={downloadDrawio}
-                className="bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+                className="flex items-center gap-2 bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-2.5 px-5 rounded-xl transition-all shadow-md shadow-cyan-500/20 text-sm"
               >
-                <Download className="w-5 h-5" />
-                Baixar Arquivo .drawio
+                <Download className="w-4 h-4" /> Baixar .drawio
               </button>
-              
-              {rawOutputs && (
+
+              {rawOutputs && (<>
                 <button
-                  onClick={() => setShowRawOutputs(!showRawOutputs)}
-                  className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 font-bold py-3 px-8 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+                  onClick={() => setShowRawOutputs(s => !s)}
+                  className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2.5 px-5 rounded-xl transition-colors text-sm border border-slate-200 dark:border-slate-700"
                 >
-                  <Terminal className="w-5 h-5" />
+                  <Terminal className="w-4 h-4" />
                   {showRawOutputs ? 'Ocultar Logs' : 'Ver Logs Brutos'}
                 </button>
-              )}
-              {rawOutputs && (
                 <button
                   onClick={downloadRawOutputs}
-                  className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 font-bold py-3 px-8 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+                  className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2.5 px-5 rounded-xl transition-colors text-sm border border-slate-200 dark:border-slate-700"
                 >
-                  <FileText className="w-5 h-5" />
-                  Baixar (.txt)
+                  <FileText className="w-4 h-4" /> Baixar (.txt)
                 </button>
-              )}
-              {rawOutputs && (
                 <button
                   onClick={copyToClipboard}
-                  className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 font-bold py-3 px-8 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+                  className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2.5 px-5 rounded-xl transition-colors text-sm border border-slate-200 dark:border-slate-700"
                 >
-                  <Copy className="w-5 h-5" />
-                  Copiar Logs
+                  <Copy className="w-4 h-4" /> Copiar Logs
                 </button>
-              )}
+              </>)}
+
               <button
                 onClick={handleClear}
-                className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold py-3 px-8 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
+                className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-500 hover:text-red-600 dark:hover:text-red-400 font-bold py-2.5 px-5 rounded-xl transition-colors text-sm border border-slate-200 dark:border-slate-700"
               >
-                <XCircle className="w-5 h-5" />
-                Limpar Resultados
+                <XCircle className="w-4 h-4" /> Limpar
               </button>
             </div>
 
-            {/* Raw Outputs Viewer */}
+
+            {/* Raw logs terminal */}
             {showRawOutputs && rawOutputs && (
-              <div className="mt-8 text-left bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner animate-in slide-in-from-top-4">
-                <div className="bg-slate-950 px-4 py-2 border-b border-slate-800 flex items-center gap-2 text-slate-400 text-sm font-mono">
-                  <Terminal className="w-4 h-4" />
-                  Terminal Output
+              <div className="bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl animate-in slide-in-from-top-4">
+                <div className="bg-slate-900 px-5 py-3 border-b border-slate-800 flex items-center gap-3">
+                  <div className="flex gap-1.5">
+                    <div className="w-3 h-3 rounded-full bg-red-500" />
+                    <div className="w-3 h-3 rounded-full bg-yellow-500" />
+                    <div className="w-3 h-3 rounded-full bg-green-500" />
+                  </div>
+                  <span className="text-slate-400 text-xs font-mono ml-2 flex items-center gap-2">
+                    <Terminal className="w-3.5 h-3.5" /> terminal — raw output
+                  </span>
                 </div>
-                <div className="p-4 max-h-96 overflow-y-auto font-mono text-xs sm:text-sm text-emerald-400 whitespace-pre-wrap">
+                <div className="p-5 max-h-96 overflow-y-auto font-mono text-xs text-emerald-400 whitespace-pre-wrap">
                   {Object.entries(rawOutputs).map(([cmd, output], idx) => (
                     <div key={idx} className="mb-6 last:mb-0">
                       <div className="text-slate-500 select-none mb-1">$ {cmd}</div>
-                      <div className="text-slate-300">{output || '<Sem saída>'}</div>
+                      <div className="text-slate-200">{output || '<sem saída>'}</div>
                     </div>
                   ))}
                 </div>
@@ -584,6 +577,11 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* FOOTER */}
+      <footer className="border-t border-slate-200 dark:border-slate-800 mt-16 py-6 text-center text-xs text-slate-400 dark:text-slate-600">
+        Magneto · Network Topology Generator · L1 · L2 · L3
+      </footer>
     </div>
   );
 }

@@ -1,304 +1,356 @@
+/**
+ * drawio.ts — draw.io XML generator
+ *
+ * Pin assignment: smart face distribution
+ *  • Page dimensions come from layout._layout (dynamic, based on node count)
+ *  • edgeStyle=none — straight lines, no auto-routing
+ *  • exitX/exitY spread across the full node face independently per link
+ *  • No waypoints — each line is 100% independent and movable
+ */
+
 import { create } from 'xmlbuilder2';
 import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
 import { getDrawioShape } from './icons.ts';
+import { getRoleTier, NODE_W, NODE_H, TIER_Y_ORIGIN, TIER_Y_GAP_EXPORT } from './layout.ts';
 
-function buildNodeLabel(node: TopologyNode): string {
-  if (node.role === 'cloud') {
-    return `<b>${node.hostname}</b>`;
+// ─────────────────────────────────────────────────────────────────
+// Fallback page dimensions (overridden by _layout when present)
+// ─────────────────────────────────────────────────────────────────
+const DEFAULT_PAGE_W = 3200;
+const DEFAULT_PAGE_H = 2000;
+
+// Spread fraction range across a node face
+const SPREAD_LO = 0.10;
+const SPREAD_HI = 0.90;
+
+const LINK_COLOR: Record<string, string> = {
+  L1: '#505050',
+  L2: '#1A5276',
+  L3: '#6C3483',
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────
+type Face = 'top' | 'bottom' | 'left' | 'right';
+
+function faceToPin(face: Face, frac: number): { x: number; y: number } {
+  switch (face) {
+    case 'top':    return { x: frac, y: 0 };
+    case 'bottom': return { x: frac, y: 1 };
+    case 'left':   return { x: 0,    y: frac };
+    case 'right':  return { x: 1,    y: frac };
   }
-  let label = `<b>${node.hostname}</b>`;
-  if (node.ip) label += `<br/>(${node.ip})`;
-  if (node.hardware_model && node.hardware_model !== 'Unknown') label += `<br/>${node.hardware_model}`;
-  if (node.os_version) label += `<br/><span style="color: #666666; font-size: 10px;">OS: ${node.os_version}</span>`;
-  if (node.serial_number) label += `<br/><span style="color: #666666; font-size: 10px;">SN: ${node.serial_number}</span>`;
-  if (node.uptime) label += `<br/><span style="color: #666666; font-size: 10px;">Up: ${node.uptime}</span>`;
-  return label;
 }
 
-function buildLinkCenterLabel(link: TopologyLink, layer: string): string {
-  let label = '';
-  if (layer === 'L1') {
-    if (link.speed) label += `<span style="color: #666666; font-size: 10px;">Speed: ${link.speed}</span><br/>`;
-    if (link.state) label += `<span style="color: #666666; font-size: 10px;">State: ${link.state}</span><br/>`;
-    if (link.transceiver) label += `<span style="color: #666666; font-size: 10px;">Tx: ${link.transceiver}</span>`;
-  } else if (layer === 'L2') {
-    // Removed verbose VLAN/STP text from center label as requested
-    if (link.port_channel) label += `<span style="color: #666666; font-size: 10px;">Po: ${link.port_channel}</span>`;
-  } else if (layer === 'L3') {
-    if (link.l3_routes && link.l3_routes.length > 0) {
-      const labels = link.l3_routes.map(r => {
-        const protoName = r.protocol.toUpperCase();
-        return `<span style="color: #005073; font-size: 11px; font-weight: bold;">${protoName} --&gt; ${r.prefix}</span>`;
-      });
-      label += labels.join('<br/>');
-    } else if (link.protocol !== 'connected') {
-      label += `<span style="color: #666666; font-size: 10px;">${link.protocol.toUpperCase()}</span>`;
+function spreadFrac(i: number, n: number): number {
+  if (n === 1) return 0.5;
+  return SPREAD_LO + (i / (n - 1)) * (SPREAD_HI - SPREAD_LO);
+}
+
+function getFace(src: TopologyNode, tgt: TopologyNode): Face {
+  const st = getRoleTier(src.role);
+  const tt = getRoleTier(tgt.role);
+  if (st < tt) return 'bottom';
+  if (st > tt) return 'top';
+  const sx = (src.x ?? 0) + NODE_W / 2;
+  const tx = (tgt.x ?? 0) + NODE_W / 2;
+  return tx > sx ? 'right' : 'left';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Global pin map — distributes pins across the full node face
+// ─────────────────────────────────────────────────────────────────
+function buildPinMap(
+  links: TopologyLink[],
+  nodeMap: Map<string, TopologyNode>
+): Map<string, { srcPin: { x: number; y: number }; tgtPin: { x: number; y: number } }> {
+
+  // node → face → [linkId]
+  const nodeFace = new Map<string, Map<Face, string[]>>();
+  function ensureFace(nodeId: string) {
+    if (!nodeFace.has(nodeId)) nodeFace.set(nodeId, new Map());
+    return nodeFace.get(nodeId)!;
+  }
+
+  for (const link of links) {
+    const src = nodeMap.get(link.source);
+    const tgt = nodeMap.get(link.target);
+    if (!src || !tgt) continue;
+    const sf = getFace(src, tgt);
+    const tf = getFace(tgt, src);
+    const sf_ = ensureFace(link.source);
+    if (!sf_.has(sf)) sf_.set(sf, []);
+    sf_.get(sf)!.push(link.id);
+    const tf_ = ensureFace(link.target);
+    if (!tf_.has(tf)) tf_.set(tf, []);
+    tf_.get(tf)!.push(link.id);
+  }
+
+  // node → linkId → fraction
+  const linkFrac = new Map<string, Map<string, number>>();
+  for (const [nodeId, faceMap] of nodeFace) {
+    if (!linkFrac.has(nodeId)) linkFrac.set(nodeId, new Map());
+    const fm = linkFrac.get(nodeId)!;
+    for (const [, lids] of faceMap) {
+      lids.forEach((lid, i) => fm.set(lid, spreadFrac(i, lids.length)));
     }
   }
-  return label;
+
+  const pinMap = new Map<string, { srcPin: { x: number; y: number }; tgtPin: { x: number; y: number } }>();
+  for (const link of links) {
+    const src = nodeMap.get(link.source);
+    const tgt = nodeMap.get(link.target);
+    if (!src || !tgt) continue;
+    const sf   = getFace(src, tgt);
+    const tf   = getFace(tgt, src);
+    const sfr  = linkFrac.get(link.source)?.get(link.id) ?? 0.5;
+    const tfr  = linkFrac.get(link.target)?.get(link.id) ?? 0.5;
+    pinMap.set(link.id, {
+      srcPin: faceToPin(sf, sfr),
+      tgtPin: faceToPin(tf, tfr),
+    });
+  }
+  return pinMap;
 }
 
-export function generateDrawioXml(topology: TopologyData): string {
-  const root = create({ version: '1.0', encoding: 'UTF-8' })
-    .ele('mxfile', { version: '21.6.8' });
+// ─────────────────────────────────────────────────────────────────
+// Label builders
+// ─────────────────────────────────────────────────────────────────
+function nodeLabel(n: TopologyNode): string {
+  if (n.role === 'cloud') return `<b>${n.hostname}</b>`;
+  let s = `<b>${n.hostname}</b>`;
+  if (n.ip) s += `<br/>(${n.ip})`;
+  if (n.hardware_model && n.hardware_model !== 'Unknown')
+    s += `<br/>${n.hardware_model}`;
+  if (n.os_version)
+    s += `<br/><font color="#888888" point-size="9">OS: ${n.os_version}</font>`;
+  if (n.serial_number)
+    s += `<br/><font color="#888888" point-size="9">SN: ${n.serial_number}</font>`;
+  return s;
+}
 
-  const layers = ['L1', 'L2', 'L3'];
-  const layerNames = { 
-    L1: 'Topologia Layer 1 (Física)', 
-    L2: 'Topologia Layer 2 (Lógica)', 
-    L3: 'Topologia Layer 3 (Roteamento)' 
+function linkCenterLabel(link: TopologyLink, layer: string): string {
+  if (layer === 'L1') {
+    const p: string[] = [];
+    if (link.speed)       p.push(`<font color="#666" point-size="9">Speed: ${link.speed}</font>`);
+    if (link.state)       p.push(`<font color="#666" point-size="9">State: ${link.state}</font>`);
+    if (link.transceiver) p.push(`<font color="#666" point-size="9">Tx: ${link.transceiver}</font>`);
+    return p.join('<br/>');
+  }
+  if (layer === 'L2') {
+    const p: string[] = [];
+    if (link.vlan)         p.push(`<font color="#1a5276" point-size="9">VLAN: ${link.vlan}</font>`);
+    if (link.port_channel) p.push(`<font color="#1a5276" point-size="9">Po: ${link.port_channel}</font>`);
+    return p.join('<br/>');
+  }
+  if (layer === 'L3') {
+    if (link.l3_routes && link.l3_routes.length > 0) {
+      return link.l3_routes
+        .map(r => `<b><font color="#5b2c6f" point-size="9">${r.protocol.toUpperCase()} &#8594; ${r.prefix}</font></b>`)
+        .join('<br/>');
+    }
+    if (link.protocol && link.protocol !== 'connected')
+      return `<font color="#666" point-size="9">${link.protocol.toUpperCase()}</font>`;
+  }
+  return '';
+}
+
+function portLabel(port: string, stpRole?: string, stpState?: string, layer?: string): string {
+  if (!port) return '';
+  if (layer !== 'L2') return port;
+  let icon = '';
+  if      (stpState === 'FWD')                            icon = '🟢 ';
+  else if (stpState === 'BLK' || stpState === 'DIS')     icon = '🔴 ';
+  else if (stpState === 'Altn')                           icon = '🟡 ';
+  else if (stpState)                                      icon = '🟠 ';
+  const roleMap: Record<string, string> = { Desg: 'DP', Root: 'RP', Altn: 'ALT', Back: 'BKP' };
+  const sr = stpRole ? (roleMap[stpRole] ?? stpRole.toUpperCase()) : '';
+  let s = `${icon}${port}`;
+  if (sr) s += `<br/><b><font color="#c0392b">${sr}</font></b>`;
+  return s;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Main export
+// ─────────────────────────────────────────────────────────────────
+export function generateDrawioXml(topology: TopologyData & { _layout?: any }): string {
+  const layout  = topology._layout;
+  const PAGE_W  = layout?.pageW  ?? DEFAULT_PAGE_W;
+  const PAGE_H  = layout?.pageH  ?? DEFAULT_PAGE_H;
+  const TIER_Y0 = layout?.tierY0 ?? TIER_Y_ORIGIN;
+  const TIER_YG = layout?.tierYGap ?? TIER_Y_GAP_EXPORT;
+
+  const xmlRoot  = create({ version: '1.0', encoding: 'UTF-8' }).ele('mxfile', { version: '21.6.8' });
+  const LAYERS   = ['L1', 'L2', 'L3'] as const;
+  const NAMES: Record<string, string> = {
+    L1: 'Topologia Layer 1 (Física)',
+    L2: 'Topologia Layer 2 (Lógica)',
+    L3: 'Topologia Layer 3 (Roteamento)',
   };
 
-  layers.forEach((layer) => {
-    const diagram = root.ele('diagram', { name: layerNames[layer as keyof typeof layerNames], id: `page_${layer}` });
-    const mxGraphModel = diagram.ele('mxGraphModel', {
-      dx: '1200', dy: '800', grid: '1', gridSize: '10', guides: '1', tooltips: '1', connect: '1', arrows: '1', fold: '1', page: '1', pageScale: '1', pageWidth: '1169', pageHeight: '827', math: '0', shadow: '0'
-    });
-    const rootCell = mxGraphModel.ele('root');
+  const nodeMap = new Map(topology.nodes.map(n => [n.id, n]));
+
+  for (const layer of LAYERS) {
+    const diagram = xmlRoot.ele('diagram', { name: NAMES[layer], id: `page_${layer}` });
+    const gmAttrs: Record<string, string> = {
+      dx: '1600', dy: '900',
+      grid: '1', gridSize: '10',
+      guides: '1', tooltips: '1',
+      connect: '1', arrows: '1', fold: '1',
+      page: '1', pageScale: '1',
+      pageWidth:  String(PAGE_W),
+      pageHeight: String(PAGE_H),
+      math: '0', shadow: '0',
+    };
+    const mxGM    = diagram.ele('mxGraphModel', gmAttrs);
+    const rootCell = mxGM.ele('root');
     rootCell.ele('mxCell', { id: `root_${layer}_0` });
     rootCell.ele('mxCell', { id: `root_${layer}_1`, parent: `root_${layer}_0` });
 
-    // Add links for this layer
-    const layerLinks = topology.links.filter(l => l.layer === layer);
-    const layerNodeIds = new Set<string>();
-    layerLinks.forEach(l => {
-      layerNodeIds.add(l.source);
-      layerNodeIds.add(l.target);
-    });
+    const layerLinks  = topology.links.filter(l => l.layer === layer);
+    const activeIds   = new Set<string>();
+    layerLinks.forEach(l => { activeIds.add(l.source); activeIds.add(l.target); });
+    const layerNodes  = topology.nodes.filter(n =>
+      layerLinks.length === 0 || activeIds.has(n.id)
+    );
 
-    // Add nodes
-    topology.nodes.forEach(node => {
-      // Skip nodes that do not participate in this layer's links (unless there are no links at all)
-      if (layerLinks.length > 0 && !layerNodeIds.has(node.id)) {
-        return;
-      }
+    const pinMap = buildPinMap(layerLinks, nodeMap);
 
+    // ── Nodes ─────────────────────────────────────────────────
+    for (const node of layerNodes) {
+      const nid   = `${layer}_node_${node.id}`;
       const shape = getDrawioShape(node.hardware_model, node.role);
-      const vertex = rootCell.ele('mxCell', {
-        id: `${layer}_node_${node.id}`,
-        value: buildNodeLabel(node),
-        style: `${shape}whiteSpace=wrap;html=1;verticalLabelPosition=bottom;verticalAlign=top;spacingTop=8;`,
-        vertex: '1',
-        parent: `root_${layer}_1`
+
+      const v = rootCell.ele('mxCell', {
+        id: nid, value: nodeLabel(node),
+        style: `${shape}whiteSpace=wrap;html=1;verticalLabelPosition=bottom;verticalAlign=top;spacingTop=6;`,
+        vertex: '1', parent: `root_${layer}_1`,
       });
-      vertex.ele('mxGeometry', {
-        x: (node.x !== undefined ? node.x : 0).toString(),
-        y: (node.y !== undefined ? node.y : 0).toString(),
-        width: '60',
-        height: '60',
-        as: 'geometry'
+      v.ele('mxGeometry', {
+        x: String(node.x ?? 0), y: String(node.y ?? 0),
+        width: String(NODE_W), height: String(NODE_H), as: 'geometry',
       });
 
+      // ROOT badge (L2)
       if (layer === 'L2' && node.isRoot) {
-        const rootLabel = rootCell.ele('mxCell', {
-          id: `${layer}_node_${node.id}_root_label`,
-          value: 'ROOT BRIDGE',
-          style: 'text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontColor=#FF0000;fontStyle=1;fontSize=12;',
-          vertex: '1',
-          parent: `root_${layer}_1`
+        const rb = rootCell.ele('mxCell', {
+          id: `${nid}_root_badge`, value: 'ROOT',
+          style: 'text;html=1;strokeColor=none;fillColor=#c0392b;fontColor=#ffffff;align=center;verticalAlign=middle;fontSize=8;fontStyle=1;rounded=1;',
+          vertex: '1', parent: `root_${layer}_1`,
         });
-        rootLabel.ele('mxGeometry', {
-          x: (node.x !== undefined ? node.x - 20 : -20).toString(),
-          y: (node.y !== undefined ? node.y - 25 : -25).toString(),
-          width: '100',
-          height: '20',
-          as: 'geometry'
+        rb.ele('mxGeometry', {
+          x: String((node.x ?? 0) + NODE_W / 2 - 14),
+          y: String((node.y ?? 0) - 16),
+          width: '28', height: '14', as: 'geometry',
         });
       }
 
+      // Routing table (L3)
       if (layer === 'L3' && node.routes && node.routes.length > 0) {
-        let tableHtml = `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse: collapse; font-size: 10px; width: 100%; background-color: #ffffff;">`;
-        tableHtml += `<tr><th colspan="3" style="background-color: #f0f0f0;">Routing Table</th></tr>`;
-        tableHtml += `<tr><th>Destination</th><th>NextHop</th><th>Interface</th></tr>`;
+        const tblW = 300;
+        const tblH = node.routes.length * 16 + 36;
+        let html = `<table border="1" cellpadding="2" cellspacing="0" style="border-collapse:collapse;font-size:9px;width:100%;background:#fff;">`;
+        html += `<tr><th colspan="3" style="background:#ede9f6;font-size:10px;color:#4a235a;">Routing — ${node.hostname}</th></tr>`;
+        html += `<tr><th style="color:#555">Destination</th><th style="color:#555">Next-Hop</th><th style="color:#555">Intf</th></tr>`;
         node.routes.forEach(r => {
-          tableHtml += `<tr><td>${r.destination}</td><td>${r.nextHop}</td><td>${r.interface}</td></tr>`;
+          html += `<tr><td>${r.destination}</td><td>${r.nextHop}</td><td>${r.interface}</td></tr>`;
         });
-        tableHtml += `</table>`;
-
-        const tableNode = rootCell.ele('mxCell', {
-          id: `${layer}_node_${node.id}_routes`,
-          value: tableHtml,
-          style: 'text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;shadow=1;',
-          vertex: '1',
-          parent: `root_${layer}_1`
+        html += '</table>';
+        const tbl = rootCell.ele('mxCell', {
+          id: `${nid}_rtable`, value: html,
+          style: 'text;html=1;whiteSpace=wrap;overflow=hidden;rounded=1;strokeColor=#cccccc;fillColor=#fafafa;',
+          vertex: '1', parent: `root_${layer}_1`,
         });
-        tableNode.ele('mxGeometry', {
-          x: (node.x !== undefined ? node.x - 100 : -100).toString(),
-          y: (node.y !== undefined ? node.y - 120 : -120).toString(),
-          width: '260',
-          height: (node.routes.length * 20 + 40).toString(),
-          as: 'geometry'
+        tbl.ele('mxGeometry', {
+          x: String((node.x ?? 0) + NODE_W / 2 - tblW / 2),
+          y: String((node.y ?? 0) - tblH - 12),
+          width: String(tblW), height: String(tblH), as: 'geometry',
         });
-
-        // Draw a line connecting the table to the router
-        const tableEdge = rootCell.ele('mxCell', {
-          id: `${layer}_node_${node.id}_routes_edge`,
-          style: 'endArrow=none;html=1;rounded=0;strokeWidth=1;strokeColor=#888888;',
-          edge: '1',
-          parent: `root_${layer}_1`,
-          source: `${layer}_node_${node.id}_routes`,
-          target: `${layer}_node_${node.id}`
+        const te = rootCell.ele('mxCell', {
+          id: `${nid}_rtable_edge`,
+          style: 'endArrow=none;html=1;dashed=1;strokeColor=#bbbbbb;strokeWidth=1;',
+          edge: '1', parent: `root_${layer}_1`, source: `${nid}_rtable`, target: nid,
         });
-        tableEdge.ele('mxGeometry', { relative: '1', as: 'geometry' });
+        te.ele('mxGeometry', { relative: '1', as: 'geometry' });
       }
-    });
+    }
 
-    // Add links for this layer
-    const linkCounts: Record<string, number> = {};
-    const linkIndexMap: Record<string, number> = {};
-    const nodeMap = new Map(topology.nodes.map(n => [n.id, n]));
+    // ── Edges ──────────────────────────────────────────────────
+    const strokeColor = LINK_COLOR[layer] ?? '#505050';
 
-    layerLinks.forEach(link => {
-      const pair = [link.source, link.target].sort().join('_');
-      linkCounts[pair] = (linkCounts[pair] || 0) + 1;
-    });
+    for (const link of layerLinks) {
+      const edgeId    = `${layer}_link_${link.id}`;
+      const centerLbl = linkCenterLabel(link, layer);
+      const pins      = pinMap.get(link.id);
+      const srcPin    = pins?.srcPin ?? { x: 0.5, y: 1 };
+      const tgtPin    = pins?.tgtPin ?? { x: 0.5, y: 0 };
 
-    layerLinks.forEach(link => {
-      const pair = [link.source, link.target].sort().join('_');
-      linkIndexMap[link.id] = linkIndexMap[pair] || 0;
-      linkIndexMap[pair] = (linkIndexMap[pair] || 0) + 1;
-      
-      const edgeId = `${layer}_link_${link.id}`;
-      const centerLabel = buildLinkCenterLabel(link, layer);
-      
-      let edgeStyle = 'endArrow=none;html=1;rounded=1;strokeWidth=2;strokeColor=#444444;labelBackgroundColor=#ffffff;fontColor=#333333;fontSize=10;';
-      
-      const totalLinks = linkCounts[pair];
-      const linkIndex = linkIndexMap[link.id];
-
+      let arrowStyle = 'endArrow=none;startArrow=none';
       if (layer === 'L3' && link.l3_routes && link.l3_routes.length > 0) {
-        let hasForward = false; // source -> target
-        let hasBackward = false; // target -> source
-        link.l3_routes.forEach(r => {
-          if (r.source === link.source) hasForward = true;
-          if (r.source === link.target) hasBackward = true;
-        });
-
-        if (hasForward && hasBackward) {
-          edgeStyle = edgeStyle.replace('endArrow=none', 'endArrow=block;startArrow=block');
-        } else if (hasForward) {
-          edgeStyle = edgeStyle.replace('endArrow=none', 'endArrow=block');
-        } else if (hasBackward) {
-          edgeStyle = edgeStyle.replace('endArrow=none', 'startArrow=block');
-        }
+        const fwd = link.l3_routes.some(r => r.source === link.source);
+        const bwd = link.l3_routes.some(r => r.source === link.target);
+        if      (fwd && bwd) arrowStyle = 'endArrow=open;startArrow=open;endFill=1;startFill=1';
+        else if (fwd)        arrowStyle = 'endArrow=open;startArrow=none;endFill=1';
+        else if (bwd)        arrowStyle = 'startArrow=open;endArrow=none;startFill=1';
       }
+
+      const style = [
+        arrowStyle,
+        'html=1',
+        'edgeStyle=none',
+        'rounded=0',
+        'strokeWidth=1.5',
+        `strokeColor=${strokeColor}`,
+        'labelBackgroundColor=#ffffff',
+        'labelBorderColor=none',
+        'fontColor=#333333',
+        'fontSize=9',
+        `exitX=${srcPin.x.toFixed(4)}`,
+        `exitY=${srcPin.y.toFixed(4)}`,
+        'exitDx=0', 'exitDy=0',
+        `entryX=${tgtPin.x.toFixed(4)}`,
+        `entryY=${tgtPin.y.toFixed(4)}`,
+        'entryDx=0', 'entryDy=0',
+      ].join(';') + ';';
 
       const edge = rootCell.ele('mxCell', {
-        id: edgeId,
-        value: centerLabel,
-        style: edgeStyle,
-        edge: '1',
-        parent: `root_${layer}_1`,
+        id: edgeId, value: centerLbl, style,
+        edge: '1', parent: `root_${layer}_1`,
         source: `${layer}_node_${link.source}`,
-        target: `${layer}_node_${link.target}`
+        target: `${layer}_node_${link.target}`,
       });
-      
-      const geometry = edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
+      edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
 
-      const nodeA = nodeMap.get(link.source);
-      const nodeB = nodeMap.get(link.target);
-      if (nodeA && nodeB && totalLinks > 1) {
-        const ax = nodeA.x || 0;
-        const ay = nodeA.y || 0;
-        const bx = nodeB.x || 0;
-        const by = nodeB.y || 0;
-        
-        // Center of nodes (assuming 60x60 size)
-        const cxA = ax + 30;
-        const cyA = ay + 30;
-        const cxB = bx + 30;
-        const cyB = by + 30;
-
-        const dx = cxB - cxA;
-        const dy = cyB - cyA;
-        const len = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        // Perpendicular vector
-        const nx = -dy / len;
-        const ny = dx / len;
-
-        // Offset distance (25 pixels between each line)
-        const spacing = 25;
-        const offsetDist = (linkIndex - (totalLinks - 1) / 2) * spacing;
-
-        const midX = cxA + dx / 2 + nx * offsetDist;
-        const midY = cyA + dy / 2 + ny * offsetDist;
-
-        const array = geometry.ele('Array', { as: 'points' });
-        array.ele('mxPoint', { x: Math.round(midX).toString(), y: Math.round(midY).toString() });
+      // Source port label
+      const srcRaw = layer === 'L3'
+        ? [link.src_port, link.src_ip].filter(Boolean).join(' / ')
+        : portLabel(link.src_port, link.src_stp_role, link.src_stp_state, layer);
+      if (srcRaw) {
+        const sl = rootCell.ele('mxCell', {
+          id: `${edgeId}_slbl`, value: srcRaw,
+          style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;fontColor=#333;labelBackgroundColor=#ffffffdd;',
+          vertex: '1', connectable: '0', parent: edgeId,
+        });
+        sl.ele('mxGeometry', { x: '-0.75', relative: '1', as: 'geometry' })
+          .ele('mxPoint', { as: 'offset' });
       }
 
-      const formatStpPort = (port: string, role?: string, state?: string) => {
-        if (layer !== 'L2' || (!role && !state)) return port;
-        
-        let icon = '';
-        if (state === 'FWD') icon = '🟢 ';
-        else if (state === 'BLK' || state === 'Altn' || state === 'DIS') icon = '❌ ';
-        else if (state) icon = '🟠 ';
-        
-        let roleStr = '';
-        if (role === 'Desg') roleStr = 'DP';
-        else if (role === 'Root') roleStr = 'RP';
-        else if (role === 'Altn') roleStr = 'ALT';
-        else if (role === 'Back') roleStr = 'BKP';
-        else if (role) roleStr = role.toUpperCase();
-        
-        let label = `${icon}${port}`;
-        if (roleStr) {
-          label += `<br><font color="#FF0000"><b>${roleStr}</b></font>`;
-        }
-        return label;
-      };
-
-      // Source Port Label
-      if (link.src_port || (layer === 'L3' && link.src_ip)) {
-        let srcVal = link.src_port || '';
-        if (layer === 'L3') {
-          if (link.src_ip) {
-            srcVal = srcVal ? `${srcVal}<br/>${link.src_ip}` : link.src_ip;
-          }
-        } else {
-          srcVal = formatStpPort(link.src_port, link.src_stp_role, link.src_stp_state);
-        }
-        
-        if (srcVal) {
-          const srcLabel = rootCell.ele('mxCell', {
-            id: `${edgeId}_src_label`,
-            value: srcVal,
-            style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];labelBackgroundColor=#ffffff;fontSize=11;fontColor=#333333;',
-            vertex: '1',
-            connectable: '0',
-            parent: edgeId
-          });
-          srcLabel.ele('mxGeometry', { x: '-0.7', relative: '1', as: 'geometry' }).ele('mxPoint', { as: 'offset' });
-        }
+      // Target port label
+      const dstRaw = layer === 'L3'
+        ? [link.dst_port, link.dst_ip].filter(Boolean).join(' / ')
+        : portLabel(link.dst_port, link.dst_stp_role, link.dst_stp_state, layer);
+      if (dstRaw) {
+        const dl = rootCell.ele('mxCell', {
+          id: `${edgeId}_dlbl`, value: dstRaw,
+          style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;fontColor=#333;labelBackgroundColor=#ffffffdd;',
+          vertex: '1', connectable: '0', parent: edgeId,
+        });
+        dl.ele('mxGeometry', { x: '0.75', relative: '1', as: 'geometry' })
+          .ele('mxPoint', { as: 'offset' });
       }
+    }
+  }
 
-      // Target Port Label
-      if (link.dst_port || (layer === 'L3' && link.dst_ip)) {
-        let dstVal = link.dst_port || '';
-        if (layer === 'L3') {
-          if (link.dst_ip) {
-            dstVal = dstVal ? `${dstVal}<br/>${link.dst_ip}` : link.dst_ip;
-          }
-        } else {
-          dstVal = formatStpPort(link.dst_port, link.dst_stp_role, link.dst_stp_state);
-        }
-
-        if (dstVal) {
-          const dstLabel = rootCell.ele('mxCell', {
-            id: `${edgeId}_dst_label`,
-            value: dstVal,
-            style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];labelBackgroundColor=#ffffff;fontSize=11;fontColor=#333333;',
-            vertex: '1',
-            connectable: '0',
-            parent: edgeId
-          });
-          dstLabel.ele('mxGeometry', { x: '0.7', relative: '1', as: 'geometry' }).ele('mxPoint', { as: 'offset' });
-        }
-      }
-    });
-  });
-
-  return root.end({ prettyPrint: true });
+  return xmlRoot.end({ prettyPrint: true });
 }
