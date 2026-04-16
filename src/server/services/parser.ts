@@ -1,23 +1,80 @@
 import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
 import { TopologyDatabase } from './topologyDb.ts';
+import { parseStpBlock } from './parsers/stp.parser.ts';
+import { parsePortChannelSummary, parseChannelGroupConfig, mergePortChannels } from './parsers/portchannel.parser.ts';
+import { buildL2TopologyView } from './builders/l2-topology.builder.ts';
+import { StpPortRecord, StpRootRecord, PortChannelRecord } from './l2/index.ts';
 
 function normalizePort(port: string): string {
-  let p = port.replace(/[\s-]/g, ''); // remove spaces and dashes
-  if (/^tegigabitethernet/i.test(p)) return p.replace(/^tegigabitethernet/i, 'Te');
-  if (/^xgigabitethernet/i.test(p)) return p.replace(/^xgigabitethernet/i, 'XGE');
-  if (/^gigabitethernet/i.test(p)) return p.replace(/^gigabitethernet/i, 'Gi');
-  if (/^gig/i.test(p)) return p.replace(/^gig/i, 'Gi');
-  if (/^fastethernet/i.test(p)) return p.replace(/^fastethernet/i, 'Fa');
-  if (/^fas/i.test(p)) return p.replace(/^fas/i, 'Fa');
-  if (/^tengigabitethernet/i.test(p)) return p.replace(/^tengigabitethernet/i, 'Te');
-  if (/^ten/i.test(p)) return p.replace(/^ten/i, 'Te');
-  if (/^twentyfivegige/i.test(p)) return p.replace(/^twentyfivegige/i, 'Twe');
-  if (/^fortygigabitethernet/i.test(p)) return p.replace(/^fortygigabitethernet/i, 'Fo');
+  if (!port) return '';
+
+  // Step 1: collapse all whitespace and hyphens that appear BEFORE the slot numbers
+  // e.g. "Te-GigabitEthernet1/0/1" → "TeGigabitEthernet1/0/1"
+  //      "Gi 1/0/1" → "Gi1/0/1"
+  // We do NOT strip hyphens that are part of the slot (e.g. "1/0/1" stays intact)
+  // Strategy: remove spaces everywhere; remove hyphens only between letters
+  let p = port.trim();
+  p = p.replace(/\s+/g, '');          // remove all spaces
+  p = p.replace(/([a-zA-Z])-([a-zA-Z])/g, '$1$2'); // remove hyphen between letters only
+
+  // ── Ordered from most-specific to least-specific ──────────────
+  // 100G
+  if (/^hundredgige/i.test(p))          return p.replace(/^hundredgige/i, 'Hu');
   if (/^hundredgigabitethernet/i.test(p)) return p.replace(/^hundredgigabitethernet/i, 'Hu');
-  if (/^ethernet/i.test(p)) return p.replace(/^ethernet/i, 'Eth');
-  if (/^eth/i.test(p)) return p.replace(/^eth/i, 'Eth');
-  if (/^portchannel/i.test(p)) return p.replace(/^portchannel/i, 'Po');
-  return port.replace(/\s+/g, ''); // return original without spaces if no match
+  if (/^100ge/i.test(p))                return p.replace(/^100ge/i, 'Hu');
+
+  // 40G
+  if (/^fortygige/i.test(p))            return p.replace(/^fortygige/i, 'Fo');
+  if (/^fortygigabitethernet/i.test(p)) return p.replace(/^fortygigabitethernet/i, 'Fo');
+  if (/^40ge/i.test(p))                 return p.replace(/^40ge/i, 'Fo');
+
+  // 25G
+  if (/^twentyfivegige/i.test(p))       return p.replace(/^twentyfivegige/i, 'Twe');
+  if (/^25ge/i.test(p))                 return p.replace(/^25ge/i, 'Twe');
+
+  // 10G — TenGigabitEthernet / TeGigabitEthernet (Cisco IOS-XE quirk)
+  // Must come BEFORE plain GigabitEthernet
+  if (/^tengigabitethernet/i.test(p))   return p.replace(/^tengigabitethernet/i, 'Te');
+  if (/^tegigabitethernet/i.test(p))    return p.replace(/^tegigabitethernet/i, 'Te');
+  if (/^10gigabitethernet/i.test(p))    return p.replace(/^10gigabitethernet/i, 'Te');
+  if (/^xgigabitethernet/i.test(p))     return p.replace(/^xgigabitethernet/i, 'Te');
+  if (/^tengige/i.test(p))              return p.replace(/^tengige/i, 'Te');
+  if (/^10ge/i.test(p))                 return p.replace(/^10ge/i, 'Te');
+
+  // 1G — GigabitEthernet
+  if (/^gigabitethernet/i.test(p))      return p.replace(/^gigabitethernet/i, 'Gi');
+  if (/^gigethernet/i.test(p))          return p.replace(/^gigethernet/i, 'Gi');
+  if (/^gige/i.test(p))                 return p.replace(/^gige/i, 'Gi');
+  if (/^gig(?=[0-9\/])/i.test(p))       return p.replace(/^gig/i, 'Gi');
+
+  // FastEthernet
+  if (/^fastethernet/i.test(p))         return p.replace(/^fastethernet/i, 'Fa');
+  if (/^fas(?=[0-9\/])/i.test(p))       return p.replace(/^fas/i, 'Fa');
+
+  // Ethernet (generic — Huawei, Dell, etc.)
+  if (/^ethernet/i.test(p))             return p.replace(/^ethernet/i, 'Eth');
+
+  // Port-channel / Aggregated Ethernet
+  if (/^port-channel/i.test(p))         return p.replace(/^port-channel/i, 'Po');
+  if (/^portchannel/i.test(p))          return p.replace(/^portchannel/i, 'Po');
+  if (/^aggregatedethernet/i.test(p))   return p.replace(/^aggregatedethernet/i, 'ae');
+  if (/^ae(?=[0-9])/i.test(p))          return p; // already short
+
+  // Serial
+  if (/^serial/i.test(p))               return p.replace(/^serial/i, 'Se');
+
+  // Management
+  if (/^management/i.test(p))           return p.replace(/^management/i, 'Mgmt');
+  if (/^mgmt(?=[0-9\/])/i.test(p))      return p;
+
+  // VLAN / SVI
+  if (/^vlan/i.test(p))                 return p.replace(/^vlan/i, 'Vl');
+
+  // Juniper / Huawei short forms already correct (ge-, xe-, et-)
+  if (/^(ge|xe|et|ae)-/i.test(p))       return p;
+
+  // No match — return cleaned (no spaces, hyphens between letters removed)
+  return p;
 }
 
 function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'distribution' | 'access' | 'router' | 'firewall' | 'cloud' {
@@ -36,8 +93,9 @@ function determineRole(hostname: string, model: string): 'unknown' | 'core' | 'd
 
 function isNetworkInterface(port: string): boolean {
   if (!port) return false;
-  const p = port.replace(/[\s-]/g, '');
-  return /^(Gi|Gig|GigabitEthernet|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|Hu|HundredGigabitEthernet|Eth|Ethernet|Po|Portchannel|Ser|Serial|mgmt|Vl|Vlan|XGE|25GE|40GE|100GE|ge|xe|et)/i.test(p);
+  // Accept already-normalized short forms AND full names
+  const p = port.replace(/\s+/g, '').replace(/([a-zA-Z])-([a-zA-Z])/g, '$1$2');
+  return /^(Gi|Gig|GigabitEthernet|GigEthernet|GigE|Fa|Fas|FastEthernet|Te|Ten|TenGigabitEthernet|TeGigabitEthernet|TenGigE|Twe|TwentyFiveGigE|Fo|FortyGigabitEthernet|FortyGigE|Hu|HundredGigabitEthernet|HundredGigE|100GE|Eth|Ethernet|Po|Port-channel|Portchannel|ae|AggregatedEthernet|Se|Serial|Mgmt|Management|Vl|Vlan|XGE|25GE|40GE|ge-|xe-|et-|ge|xe|et)/i.test(p);
 }
 
 function normalizeHostname(name: string): string {
@@ -63,6 +121,9 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   const linksMap: Record<string, TopologyLink> = {};
 
   const extractedL2Links: Array<{ sourceDevice: string, localPort: string, vlan: string, role: string, state: string }> = [];
+  const allStpPorts: StpPortRecord[] = [];
+  const allStpRoots: StpRootRecord[] = [];
+  const allPortChannels: PortChannelRecord[] = [];
   
   // L3 Extraction Arrays
   const ipToDevice: Record<string, string> = {};
@@ -314,6 +375,22 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       }
     }
 
+    // --- ENHANCED STP PARSE (multi-VLAN, root per instance) ---
+    const stpResult = parseStpBlock(hostname, blockData, 'show spanning-tree');
+    allStpPorts.push(...stpResult.ports);
+    allStpRoots.push(...stpResult.roots);
+
+    // Sync isRoot from new parser to legacy field (backwards compat)
+    if (stpResult.roots.some(r => r.localDeviceIsRoot)) {
+      db.upsertDevice({ id: hostname, hostname, ip: '', vendor: vendor as any,
+        hardware_model: 'Unknown', role: 'access', isRoot: true });
+    }
+
+    // --- PARSE PORT-CHANNEL ---
+    const pcFromSummary = parsePortChannelSummary(hostname, blockData);
+    const pcFromConfig  = parseChannelGroupConfig(hostname, blockData);
+    allPortChannels.push(...pcFromSummary, ...pcFromConfig);
+
     // --- PARSE L3 (ROUTING & NEIGHBORS) ---
     let currentRouteCode = '';
     let currentPrefix = '';
@@ -442,7 +519,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
       if (!nodesMap[route.sourceDevice].routes) {
         nodesMap[route.sourceDevice].routes = [];
       }
-      nodesMap[route.sourceDevice].routes.push({
+      nodesMap[route.sourceDevice].routes!.push({
         destination: route.prefix,
         nextHop: route.nextHop,
         interface: route.localPort,
@@ -513,7 +590,7 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
   }
 
-  // Add L2 Links based on STP and L1 adjacency
+  // ── LEGACY L2 builder (still used as fallback when new data absent) ──────────
   const l2ByPort: Record<string, { sourceDevice: string, localPort: string, vlan: string, role: string, state: string }> = {};
   for (const l2 of extractedL2Links) {
     const key = `${l2.sourceDevice}_${l2.localPort}`;
@@ -525,24 +602,20 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   }
 
   for (const [key, l2] of Object.entries(l2ByPort)) {
-    // Find the corresponding L1 link in the DB
-    // We need to check both directions because the DB deduplicates
-    const l1Link = physicalLinks.find(l => 
+    const l1Link = physicalLinks.find(l =>
       (l.source === l2.sourceDevice && l.src_port === l2.localPort) ||
       (l.target === l2.sourceDevice && l.dst_port === l2.localPort)
     );
-    
     if (!l1Link) continue;
 
     const sDevice = l1Link.source;
     const rDevice = l1Link.target;
     const lPort = l1Link.src_port;
     const rPort = l1Link.dst_port;
-
     const devices = [sDevice, rDevice].sort();
     const ports = sDevice < rDevice ? [lPort, rPort] : [rPort, lPort];
     const linkKey = `L2_${devices[0]}_${ports[0]}_${devices[1]}_${ports[1]}`;
-    
+
     if (!linksMap[linkKey]) {
       linksMap[linkKey] = {
         id: `l2_${linkIdCounter++}`,
@@ -555,13 +628,60 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         vlan: l2.vlan
       };
     }
-    
     if (linksMap[linkKey].source === l2.sourceDevice) {
-       linksMap[linkKey].src_stp_role = l2.role;
-       linksMap[linkKey].src_stp_state = l2.state;
+      linksMap[linkKey].src_stp_role = l2.role;
+      linksMap[linkKey].src_stp_state = l2.state;
     } else {
-       linksMap[linkKey].dst_stp_role = l2.role;
-       linksMap[linkKey].dst_stp_state = l2.state;
+      linksMap[linkKey].dst_stp_role = l2.role;
+      linksMap[linkKey].dst_stp_state = l2.state;
+    }
+  }
+
+  // ── ENHANCED L2 builder — consolidates STP + Port-channel data ───────────
+  if (allStpPorts.length > 0 || allPortChannels.length > 0) {
+    const mergedPCs = mergePortChannels(allPortChannels);
+    const nodesArray = Object.values(nodesMap);
+    const l1PhysLinks = Object.values(linksMap).filter(l => l.layer === 'L1');
+
+    const l2View = buildL2TopologyView({
+      nodes:         nodesArray,
+      physicalLinks: l1PhysLinks,
+      stpPorts:      allStpPorts,
+      stpRoots:      allStpRoots,
+      portChannels:  mergedPCs,
+    });
+
+    // Convert logical links to TopologyLink format
+    for (const ll of l2View.logicalLinks) {
+      const linkKey = `L2_enhanced_${ll.logicalBundleId}`;
+      if (linksMap[linkKey]) continue; // already from legacy builder
+
+      linksMap[linkKey] = {
+        id:              `l2_${linkIdCounter++}`,
+        source:          ll.sourceDevice,
+        target:          ll.targetDevice,
+        src_port:        ll.sourcePortChannel ?? ll.sourcePort,
+        dst_port:        ll.targetPortChannel ?? ll.targetPort,
+        layer:           'L2',
+        protocol:        'stp',
+        vlan:            ll.vlans.join(','),
+        vlansCarried:    ll.vlans,
+        port_channel:    ll.sourcePortChannel ?? ll.targetPortChannel,
+        logicalBundleId: ll.logicalBundleId,
+        isBlocked:       ll.isBlocked,
+        isRootPath:      ll.isRootPath,
+        src_stp_role:    ll.sourceRole,
+        src_stp_state:   ll.sourceState,
+        dst_stp_role:    ll.targetRole,
+        dst_stp_state:   ll.targetState,
+      };
+    }
+
+    // Update nodes with stpRootForVlans data
+    for (const n of nodesArray) {
+      if (n.stpRootForVlans || n.stpRootForInstances) {
+        nodesMap[n.id] = n;
+      }
     }
   }
 
