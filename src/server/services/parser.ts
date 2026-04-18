@@ -4,6 +4,7 @@ import { parseStpBlock } from './parsers/stp.parser.ts';
 import { parsePortChannelSummary, parseChannelGroupConfig, mergePortChannels } from './parsers/portchannel.parser.ts';
 import { buildL2TopologyView } from './builders/l2-topology.builder.ts';
 import { StpPortRecord, StpRootRecord, PortChannelRecord } from './l2/index.ts';
+import { extractDeviceInfo } from './parsers/device-info.parser.ts';
 
 function normalizePort(port: string): string {
   if (!port) return '';
@@ -132,64 +133,45 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   const extractedRoutes: Array<{ sourceDevice: string, code: string, prefix: string, nextHop: string, localPort: string }> = [];
 
   function parseBlock(hostname: string, blockData: string) {
-    let hwModel = 'Unknown';
-    
-    const extractFirstValid = (regex: RegExp) => {
-        const matches = [...blockData.matchAll(regex)];
-        for (const match of matches) {
-            const val = match[1].trim();
-            if (val && val.toUpperCase() !== 'UNSPECIFIED' && val.toUpperCase() !== 'UNKNOWN' && val.toUpperCase() !== 'N/A') {
-                return val;
-            }
-        }
-        return null;
-    };
+    // ── Extract all device metadata via dedicated parser ─────────────────
+    const devInfo = extractDeviceInfo(blockData);
 
-    // 1. Try explicit inventory/manuinfo commands first (highest accuracy)
-    const pidMatch = extractFirstValid(/PID:\s*([^,\r\n]+)/gi);
-    const productMatch = extractFirstValid(/Product(?: Name| ID| Number)?\s*[:=]\s*([^,\r\n]+)/gi);
-    const manuinfoMatch = extractFirstValid(/(?:DEVICE_NAME|Device Name|Device)\s*[:=]\s*([^,\r\n]+)/gi);
-    const sysTypeMatch = extractFirstValid(/System Type\s*[:=]\s*([^,\r\n]+)/gi);
-    const modelMatch = extractFirstValid(/(?:Hardware Model|Model)\s*[:=]\s*([^,\r\n]+)/gi);
-    
-    // 2. Try specific known patterns in show version or other outputs
-    const specificMatch = extractFirstValid(/\b(WS-C[\w\-]+|C\d{4,}[\w\-]*|Nexus\s*\d+[\w\-]*|ISR\d+[\w\-]*|ASR\d+[\w\-]*|FPR\d+[\w\-]*|SRX\d+[\w\-]*|MX\d{4,}[\w\-]*|S\d{4,}[\w\-]*|Z\d{4,}[\w\-]*|NE\d{2,}[\w\-]*|125\d{2}[\w\-]*)\b/gi);
+    const hwModel    = devInfo.hardwareModel ?? 'Unknown';
+    const mgmtIp     = devInfo.managementIp  ?? '';
+    const serialNum  = devInfo.serialNumber;
+    const osVer      = devInfo.osVersion;
+    const isRoot     = /This bridge is the root/i.test(blockData);
 
-    if (pidMatch) {
-        hwModel = pidMatch;
-    } else if (productMatch) {
-        hwModel = productMatch;
-    } else if (manuinfoMatch) {
-        hwModel = manuinfoMatch;
-    } else if (sysTypeMatch) {
-        hwModel = sysTypeMatch;
-    } else if (modelMatch) {
-        hwModel = modelMatch;
-    } else if (specificMatch) {
-        hwModel = specificMatch;
-    } else {
-        // 3. Fallback to generic pattern
-        const genericMatch = blockData.match(/(?:hardware|model|platform|system type)\s*(?:is|:)?\s*([A-Za-z0-9\-_]+(?:[ \t]+[A-Za-z0-9\-_]+)*)/i);
-        if (genericMatch && genericMatch[1] && !/^(processor|memory|chassis|uptime|software|version)/i.test(genericMatch[1])) {
-            hwModel = genericMatch[1].trim();
-        }
-    }
-    
-    // Clean up hwModel if it accidentally captured an OS string
-    if (hwModel.toLowerCase().includes('nexus operating system') || hwModel.toLowerCase().includes('nx-os')) {
-        hwModel = 'Nexus';
-    }
-    
-    const isRoot = /This bridge is the root/i.test(blockData);
+    // Register management IP so L3 builder can resolve it to a device
+    if (mgmtIp) ipToDevice[mgmtIp] = hostname;
 
     db.upsertDevice({
       id: hostname,
       hostname: hostname,
+      ip: mgmtIp,
       vendor: vendor as any,
       hardware_model: hwModel,
       role: determineRole(hostname, hwModel),
       isRoot: isRoot
     });
+
+    // Store serial + OS in nodesMap immediately (will be merged later)
+    if (!nodesMap[hostname]) {
+      nodesMap[hostname] = {
+        id: hostname, hostname, ip: mgmtIp,
+        vendor: vendor as any, hardware_model: hwModel,
+        role: determineRole(hostname, hwModel),
+        serial_number: serialNum, os_version: osVer,
+      };
+    } else {
+      if (mgmtIp    && !nodesMap[hostname].ip)             nodesMap[hostname].ip = mgmtIp;
+      if (serialNum && !nodesMap[hostname].serial_number)   nodesMap[hostname].serial_number = serialNum;
+      if (osVer     && !nodesMap[hostname].os_version)      nodesMap[hostname].os_version = osVer;
+      if (hwModel !== 'Unknown' && (nodesMap[hostname].hardware_model === 'Unknown' || !nodesMap[hostname].hardware_model)) {
+        nodesMap[hostname].hardware_model = hwModel;
+        nodesMap[hostname].role = determineRole(hostname, hwModel);
+      }
+    }
 
     // --- PARSE CDP DETAIL ---
     const cdpBlocks = blockData.split(/Device ID:/i).slice(1);

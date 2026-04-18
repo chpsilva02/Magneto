@@ -1,4 +1,4 @@
-export type Vendor = 'cisco_ios' | 'cisco_nxos' | 'aruba_os' | 'hpe_comware' | 'juniper_junos' | 'huawei_vrp';
+export type Vendor = 'cisco_ios' | 'cisco_nxos' | 'aruba_os' | 'hpe_comware' | 'juniper_junos' | 'huawei_vrp' | 'arista_eos' | 'dell_os10' | 'fortinet' | 'paloalto' | 'extreme';
 
 export interface CommandProfile {
   l1: string[];

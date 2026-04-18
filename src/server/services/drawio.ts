@@ -33,7 +33,7 @@ const SPREAD_HI = 0.90;
 const L2_COLORS = {
   root:        '#1A6B3C',
   blocked:     '#C0392B',
-  bundle:      '#154360',
+  bundle:      '#FFB570',
   normal:      '#1A5276',
   disabled:    '#AAB7B8',
   badge_root:  '#1A6B3C',
@@ -220,7 +220,7 @@ function l2CenterLabel(link: TopologyLink): string {
 
   // Port-channel ID
   if (link.port_channel) {
-    parts.push(`<b><font color="#154360">${link.port_channel}</font></b>`);
+    parts.push(`<b><font color="${L2_COLORS.bundle}">${link.port_channel}</font></b>`);
   }
 
   // VLANs
@@ -390,47 +390,64 @@ function l2EdgeStyle(link: TopologyLink, srcPin: {x:number;y:number}, tgtPin: {x
 // Legends
 // ─────────────────────────────────────────────────────────────────────────────
 function addL1Legend(rootCell: any, pageId: string, x: number, y: number) {
+  // Exactly matches Image 1: bold title, line sample, label format note
   const html = [
-    '<table style="font-size:10px;border-collapse:collapse;width:100%">',
-    '<tr><td colspan="2" style="font-weight:bold;background:#e8e8e8;padding:3px;">L1 — Physical Legend</td></tr>',
-    '<tr><td style="color:#505050;font-weight:bold">───</td><td>CDP / LLDP link</td></tr>',
-    '<tr><td style="color:#505050">═══</td><td>Port-channel / LAG</td></tr>',
-    '<tr><td colspan="2" style="border-top:1px solid #ccc;padding-top:2px;color:#555">',
-    'Labels: local_port ↔ remote_port<br/>Speed · State · Transceiver</td></tr>',
+    '<table style="font-size:11px;border-collapse:collapse;width:100%;font-family:Helvetica,Arial,sans-serif;">',
+    '<tr><td colspan="2" style="font-weight:bold;font-size:12px;padding:4px 6px 6px 6px;">L1 - Physical Legend</td></tr>',
+    '<tr><td style="padding:2px 8px;width:60px;"><hr style="border:2px solid #505050;margin:0;"/></td>',
+    '    <td style="padding:2px 6px;">CDP / LLDP link</td></tr>',
+    '<tr><td colspan="2" style="border-top:1px solid #cccccc;padding:4px 6px;font-size:10px;color:#444444;">',
+    'Labels: local_port ↔ remote_port</td></tr>',
     '</table>',
   ].join('');
 
   const leg = rootCell.ele('mxCell', {
     id: `${pageId}_l1_legend`, value: html,
-    style: 'text;html=1;whiteSpace=wrap;strokeColor=#aaaaaa;fillColor=#fafafa;rounded=1;shadow=1;align=left;verticalAlign=top;',
+    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888888;fillColor=#ffffff;rounded=1;arcSize=8;align=left;verticalAlign=top;spacingLeft=0;',
     vertex: '1', parent: `root_${pageId}_1`,
   });
-  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '210', height: '110', as: 'geometry' });
+  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '240', height: '90', as: 'geometry' });
 }
 
 function addL2Legend(rootCell: any, pageId: string, x: number, y: number) {
+  // Matches Image 2 exactly: green root, red dashed blocked, orange port-channel, dark normal
   const html = [
-    '<table style="font-size:10px;border-collapse:collapse;width:100%">',
-    '<tr><td colspan="2" style="font-weight:bold;background:#f0f0f0;padding:3px;">L2 — STP Legend</td></tr>',
-    `<tr><td style="color:${L2_COLORS.root};font-weight:bold">─────</td><td>Root path (RP/FWD)</td></tr>`,
-    `<tr><td style="color:${L2_COLORS.blocked}">- - -</td><td style="color:${L2_COLORS.blocked}">Blocked / ALT</td></tr>`,
-    `<tr><td style="color:${L2_COLORS.bundle};font-weight:bold">═════</td><td>Port-channel bundle</td></tr>`,
-    '<tr><td style="color:#1A5276">─────</td><td>Normal FWD link</td></tr>',
-    '<tr><td>🟢</td><td>Forwarding (FWD)</td></tr>',
-    '<tr><td>🔴</td><td>Blocking / DISC</td></tr>',
-    '<tr><td>🟡</td><td>Alternate (ALT)</td></tr>',
-    '<tr><td colspan="2" style="border-top:1px solid #ccc;padding-top:2px;font-size:9px;">',
-    'RP=Root Port · DP=Designated · ALT=Alternate · BK=Backup<br/>',
-    'Po label shows member interfaces below</td></tr>',
+    '<table style="font-size:11px;border-collapse:collapse;width:100%;font-family:Helvetica,Arial,sans-serif;">',
+    '<tr><td colspan="2" style="font-weight:bold;font-size:12px;padding:4px 6px 6px 6px;">L2 - STP Legend</td></tr>',
+
+    // Root path — solid green
+    '<tr><td style="padding:3px 8px;width:80px;"><hr style="border:2.5px solid #1A6B3C;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Root path (RP/FWD)</td></tr>',
+
+    // Blocked/ALT — dashed red
+    '<tr><td style="padding:3px 8px;"><span style="color:#C0392B;font-size:14px;letter-spacing:2px;">- - - - -</span></td>',
+    '    <td style="padding:3px 6px;color:#C0392B;">Blocked / ALT</td></tr>',
+
+    // Port-channel — solid orange #FFB570
+    '<tr><td style="padding:3px 8px;"><hr style="border:2.5px solid #FFB570;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Port-channel bundle</td></tr>',
+
+    // Normal FWD — dark blue
+    '<tr><td style="padding:3px 8px;"><hr style="border:1.5px solid #1A5276;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Normal FWD link</td></tr>',
+
+    // State dots
+    '<tr><td style="padding:3px 8px;font-size:16px;">🟢</td><td style="padding:3px 6px;">Forwarding (FWD)</td></tr>',
+    '<tr><td style="padding:3px 8px;font-size:16px;">🔴</td><td style="padding:3px 6px;">Blocking / DISC</td></tr>',
+    '<tr><td style="padding:3px 8px;font-size:16px;">🟡</td><td style="padding:3px 6px;">Alternate (ALT)</td></tr>',
+
+    // Abbreviations footer
+    '<tr><td colspan="2" style="border-top:1px solid #cccccc;padding:4px 6px;font-size:10px;color:#444444;">',
+    'RP=Root Port · DP=Designated · ALT=Alternate · BK=Backup</td></tr>',
     '</table>',
   ].join('');
 
   const leg = rootCell.ele('mxCell', {
     id: `${pageId}_l2_legend`, value: html,
-    style: 'text;html=1;whiteSpace=wrap;strokeColor=#aaaaaa;fillColor=#fafafa;rounded=1;shadow=1;align=left;verticalAlign=top;',
+    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888888;fillColor=#ffffff;rounded=1;arcSize=5;align=left;verticalAlign=top;spacingLeft=0;',
     vertex: '1', parent: `root_${pageId}_1`,
   });
-  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '230', height: '195', as: 'geometry' });
+  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '270', height: '245', as: 'geometry' });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -23,12 +23,17 @@ type Theme  = 'light' | 'dark';
 // STATIC DATA
 // ─────────────────────────────────────────────────────────────────────────────
 const VENDORS = [
-  { value: 'cisco_ios',    label: 'Cisco IOS-XE' },
-  { value: 'cisco_nxos',  label: 'Cisco NX-OS' },
-  { value: 'aruba_os',    label: 'HP/HPE Aruba' },
-  { value: 'hpe_comware', label: 'HPE Comware' },
+  { value: 'cisco_ios',      label: 'Cisco IOS-XE' },
+  { value: 'cisco_nxos',    label: 'Cisco NX-OS' },
+  { value: 'aruba_os',      label: 'HP/HPE Aruba' },
+  { value: 'hpe_comware',   label: 'HPE Comware' },
   { value: 'juniper_junos', label: 'Juniper JunOS' },
-  { value: 'huawei_vrp',  label: 'Huawei VRP' },
+  { value: 'huawei_vrp',    label: 'Huawei VRP' },
+  { value: 'arista_eos',    label: 'Arista EOS' },
+  { value: 'dell_os10',     label: 'Dell OS10' },
+  { value: 'fortinet',      label: 'Fortinet FortiOS' },
+  { value: 'paloalto',      label: 'Palo Alto PAN-OS' },
+  { value: 'extreme',       label: 'Extreme Networks' },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

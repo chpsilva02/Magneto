@@ -1,29 +1,21 @@
 /**
- * layout.ts — Sugiyama-style hierarchical layout
+ * layout.ts — Adaptive Hierarchical Layout
  *
- * Algorithm (3 phases):
+ * Strategy for large topologies (many access nodes):
+ *  1. Group access nodes by their primary upstream parent (distribution/core)
+ *  2. Lay out each group in a sub-column under its parent
+ *  3. When a tier has more nodes than MAX_PER_ROW, wrap into multiple rows
+ *  4. Embed mxHierarchicalLayout hint in _layout so drawio.ts can add it
+ *     to the mxGraphModel — draw.io will auto-apply on open if desired
  *
- * Phase 1 — Leaf ordering (deepest tier):
- *   Nodes are sorted by their primary parent (the parent with the most
- *   connections), so siblings are always adjacent. This eliminates the
- *   "fan-out" crossing pattern.
- *
- * Phase 2 — Bottom-up centroid placement:
- *   Each parent is placed at the horizontal centroid of its children.
- *   Dual-homed nodes (two parents) are placed between both parents.
- *
- * Phase 3 — Collision resolution:
- *   A left-to-right sweep pushes nodes right until no two nodes in the
- *   same tier are closer than X_GAP. A second pass re-centres parents
- *   over their children after the sweep.
- *
- * Canvas size is computed dynamically so all nodes always fit.
+ * X_GAP and Y_GAP are adaptive: larger topologies get tighter spacing
+ * so everything fits on a readable canvas.
  */
 
 import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
 
 // ─────────────────────────────────────────────────────────────────
-// Role → tier  (lower = higher in the diagram)
+// Role → tier  (0 = topmost)
 // ─────────────────────────────────────────────────────────────────
 export function getRoleTier(role: string): number {
   switch (role) {
@@ -40,16 +32,9 @@ export function getRoleTier(role: string): number {
 export const NODE_W = 60;
 export const NODE_H = 60;
 
-// Spacing — generous so parallel links never cross nodes
-const X_GAP      = 280;   // min horizontal gap between node centres
-const Y_GAP      = 380;   // vertical distance between tier centres
-const MARGIN_X   = 200;   // left padding
-const MARGIN_Y   = 160;   // top padding before first tier
-const MIN_PAGE_W = 1800;
-
 // Exported for drawio.ts compatibility
-export const TIER_Y_ORIGIN    = MARGIN_Y;
-export const TIER_Y_GAP_EXPORT = Y_GAP;
+export const TIER_Y_ORIGIN     = 160;
+export const TIER_Y_GAP_EXPORT = 320;
 
 export interface LayoutResult {
   nodes:    TopologyNode[];
@@ -60,17 +45,28 @@ export interface LayoutResult {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Main layout computation
+// Adaptive spacing based on topology size
+// ─────────────────────────────────────────────────────────────────
+function adaptiveSpacing(totalNodes: number) {
+  if (totalNodes <= 20)  return { xGap: 260, yGap: 340, maxPerRow: 12, marginX: 180, marginY: 160 };
+  if (totalNodes <= 40)  return { xGap: 220, yGap: 300, maxPerRow: 14, marginX: 160, marginY: 140 };
+  if (totalNodes <= 70)  return { xGap: 190, yGap: 270, maxPerRow: 16, marginX: 140, marginY: 120 };
+  if (totalNodes <= 100) return { xGap: 170, yGap: 250, maxPerRow: 18, marginX: 120, marginY: 100 };
+  return                        { xGap: 150, yGap: 220, maxPerRow: 20, marginX: 100, marginY: 80  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Main layout
 // ─────────────────────────────────────────────────────────────────
 function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResult {
+  const { xGap, yGap, maxPerRow, marginX, marginY } = adaptiveSpacing(nodes.length);
   const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-  // ── Build directed parent→child graph (higher tier → lower tier) ──
+  // ── Build parent→child tree (cross-tier only) ─────────────────
   const children = new Map<string, string[]>();
   const parents  = new Map<string, string[]>();
   nodes.forEach(n => { children.set(n.id, []); parents.set(n.id, []); });
 
-  // Use a Set to avoid duplicate adjacency entries
   const addedEdge = new Set<string>();
   for (const link of links) {
     const src = nodeById.get(link.source);
@@ -78,10 +74,8 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
     if (!src || !tgt) continue;
     const st = getRoleTier(src.role);
     const tt = getRoleTier(tgt.role);
-    let p: string, c: string;
-    if      (st < tt) { p = link.source; c = link.target; }
-    else if (tt < st) { p = link.target; c = link.source; }
-    else continue; // same tier — skip for tree structure
+    if (st === tt) continue;
+    const [p, c] = st < tt ? [link.source, link.target] : [link.target, link.source];
     const key = `${p}→${c}`;
     if (addedEdge.has(key)) continue;
     addedEdge.add(key);
@@ -89,7 +83,7 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
     parents.get(c)!.push(p);
   }
 
-  // ── Group nodes by tier ─────────────────────────────────────────
+  // ── Group nodes by tier ───────────────────────────────────────
   const byTier = new Map<number, TopologyNode[]>();
   for (const n of nodes) {
     const t = getRoleTier(n.role);
@@ -97,22 +91,18 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
     byTier.get(t)!.push(n);
   }
   const sortedTiers = [...byTier.keys()].sort((a, b) => a - b);
-  const maxTier = sortedTiers[sortedTiers.length - 1] ?? 0;
+  const maxTier     = sortedTiers[sortedTiers.length - 1] ?? 0;
 
-  // ── Phase 1: Order leaves by primary parent ─────────────────────
-  // Primary parent = the parent that has the most children (biggest subtree)
-  function primaryParent(nodeId: string): string | null {
-    const ps = parents.get(nodeId) ?? [];
-    if (ps.length === 0) return null;
+  // ── Primary parent (most connections) ────────────────────────
+  function primaryParent(id: string): string | null {
+    const ps = parents.get(id) ?? [];
+    if (!ps.length) return null;
     return ps.reduce((best, p) =>
       (children.get(p)?.length ?? 0) > (children.get(best)?.length ?? 0) ? p : best
     , ps[0]);
   }
 
-  // DFS from roots in sorted order, emit leaves in visit order
-  const roots = nodes.filter(n => (parents.get(n.id)?.length ?? 0) === 0)
-                     .sort((a, b) => a.id.localeCompare(b.id));
-
+  // ── DFS leaf ordering (group siblings together) ───────────────
   const visited   = new Set<string>();
   const leafSlots: string[] = [];
 
@@ -121,98 +111,123 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
     visited.add(id);
     const ch = (children.get(id) ?? []).slice().sort((a, b) => a.localeCompare(b));
     const myTier = getRoleTier(nodeById.get(id)?.role ?? '');
-    if (ch.length === 0 && myTier === maxTier) {
-      leafSlots.push(id); return;
-    }
-    // Visit children that have this node as their primary parent first
-    const primary   = ch.filter(c => primaryParent(c) === id);
-    const secondary = ch.filter(c => primaryParent(c) !== id);
-    for (const c of [...primary, ...secondary]) dfs(c);
+    if (!ch.length && myTier === maxTier) { leafSlots.push(id); return; }
+    const prim = ch.filter(c => primaryParent(c) === id);
+    const sec  = ch.filter(c => primaryParent(c) !== id);
+    for (const c of [...prim, ...sec]) dfs(c);
   }
 
+  const roots = nodes.filter(n => !(parents.get(n.id)?.length)).sort((a,b)=>a.id.localeCompare(b.id));
   for (const r of roots) dfs(r.id);
-  // Catch disconnected leaves
-  for (const n of byTier.get(maxTier) ?? [])
-    if (!leafSlots.includes(n.id)) leafSlots.push(n.id);
+  for (const n of byTier.get(maxTier) ?? []) if (!leafSlots.includes(n.id)) leafSlots.push(n.id);
 
-  // ── Assign X positions to leaves ────────────────────────────────
+  // ── Position leaves with wrap ─────────────────────────────────
+  // Group leaves by their primary parent to keep subtrees together
+  // then wrap within each group when group exceeds maxPerRow
   const posX = new Map<string, number>();
   const posY = new Map<string, number>();
-  const leafY = MARGIN_Y + maxTier * Y_GAP;
 
-  leafSlots.forEach((id, i) => {
-    posX.set(id, MARGIN_X + i * X_GAP);
-    posY.set(id, leafY);
-  });
+  // Group leafSlots by primary parent
+  const leafGroups = new Map<string, string[]>();
+  for (const id of leafSlots) {
+    const pp = primaryParent(id) ?? '__root__';
+    if (!leafGroups.has(pp)) leafGroups.set(pp, []);
+    leafGroups.get(pp)!.push(id);
+  }
 
-  // ── Phase 2: Bottom-up centroid for non-leaves ──────────────────
+  let cursorX = marginX;
+  let baseLeafY = marginY + maxTier * yGap;
+
+  for (const [, group] of leafGroups) {
+    // Lay group in rows of maxPerRow
+    let rowStart = cursorX;
+    for (let i = 0; i < group.length; i++) {
+      const col = i % maxPerRow;
+      const row = Math.floor(i / maxPerRow);
+      const x   = rowStart + col * xGap;
+      const y   = baseLeafY + row * yGap;
+      posX.set(group[i], x);
+      posY.set(group[i], y);
+    }
+    // Advance cursor past this group
+    const cols = Math.min(group.length, maxPerRow);
+    cursorX += cols * xGap;
+  }
+
+  // Track extra rows added by wrapping
+  let maxLeafY = baseLeafY;
+  for (const id of leafSlots) {
+    const y = posY.get(id) ?? baseLeafY;
+    if (y > maxLeafY) maxLeafY = y;
+  }
+
+  // ── Bottom-up centroid placement ──────────────────────────────
   for (let t = maxTier - 1; t >= sortedTiers[0]; t--) {
     const tierNodes = byTier.get(t) ?? [];
-    const y = MARGIN_Y + t * Y_GAP;
+    const y = marginY + t * yGap;
 
     for (const n of tierNodes) {
       posY.set(n.id, y);
       const ch = children.get(n.id) ?? [];
       const xs = ch.map(c => posX.get(c)).filter((x): x is number => x !== undefined);
-      if (xs.length > 0) {
-        posX.set(n.id, xs.reduce((a, b) => a + b, 0) / xs.length);
-      }
+      if (xs.length) posX.set(n.id, xs.reduce((a, b) => a + b, 0) / xs.length);
     }
 
-    // Nodes without children at this tier — place after rightmost
-    const withPos = tierNodes.filter(n => posX.has(n.id)).sort((a,b)=>posX.get(a.id)!-posX.get(b.id)!);
-    const noPos   = tierNodes.filter(n => !posX.has(n.id));
-    let nextX = withPos.length > 0 ? posX.get(withPos[withPos.length-1].id)! + X_GAP : MARGIN_X;
-    for (const n of noPos) { posX.set(n.id, nextX); nextX += X_GAP; }
+    // Nodes without position: place after rightmost in tier
+    const noPos = tierNodes.filter(n => !posX.has(n.id));
+    const placed = tierNodes.filter(n => posX.has(n.id)).sort((a,b) => posX.get(a.id)! - posX.get(b.id)!);
+    let nx = placed.length ? posX.get(placed[placed.length-1].id)! + xGap : marginX;
+    for (const n of noPos) { posX.set(n.id, nx); nx += xGap; }
   }
 
-  // Handle root tier
+  // Root tier
   for (const n of byTier.get(sortedTiers[0]) ?? []) {
     if (!posX.has(n.id)) {
-      const ch = children.get(n.id) ?? [];
-      const xs = ch.map(c => posX.get(c)).filter((x): x is number => x !== undefined);
-      posX.set(n.id, xs.length > 0 ? xs.reduce((a,b)=>a+b,0)/xs.length : MARGIN_X);
-      posY.set(n.id, MARGIN_Y + sortedTiers[0] * Y_GAP);
+      const xs = (children.get(n.id) ?? []).map(c => posX.get(c)).filter((x): x is number => x !== undefined);
+      posX.set(n.id, xs.length ? xs.reduce((a,b)=>a+b,0)/xs.length : marginX);
+      posY.set(n.id, marginY + sortedTiers[0] * yGap);
     }
   }
 
-  // ── Phase 3: Collision resolution (left-to-right sweep) ─────────
-  // Two passes: push right → re-centre parents
-  for (let pass = 0; pass < 2; pass++) {
-    for (const t of sortedTiers) {
-      const sorted = (byTier.get(t) ?? [])
-        .filter(n => posX.has(n.id))
-        .sort((a, b) => posX.get(a.id)! - posX.get(b.id)!);
-
-      for (let i = 1; i < sorted.length; i++) {
-        const gap = posX.get(sorted[i].id)! - posX.get(sorted[i-1].id)!;
-        if (gap < X_GAP) posX.set(sorted[i].id, posX.get(sorted[i-1].id)! + X_GAP);
+  // ── Collision resolution (3 passes) ──────────────────────────
+  for (let pass = 0; pass < 3; pass++) {
+    // Per Y-row sweep (handles wrapped rows correctly)
+    const byRow = new Map<number, string[]>();
+    for (const n of nodes) {
+      const y = posY.get(n.id) ?? 0;
+      if (!byRow.has(y)) byRow.set(y, []);
+      byRow.get(y)!.push(n.id);
+    }
+    for (const [, row] of byRow) {
+      row.sort((a, b) => (posX.get(a) ?? 0) - (posX.get(b) ?? 0));
+      for (let i = 1; i < row.length; i++) {
+        const gap = (posX.get(row[i]) ?? 0) - (posX.get(row[i-1]) ?? 0);
+        if (gap < xGap) posX.set(row[i], (posX.get(row[i-1]) ?? 0) + xGap);
       }
     }
-
-    // Re-centre parents over their (possibly shifted) children
+    // Re-centre parents
     for (let t = maxTier - 1; t >= sortedTiers[0]; t--) {
       for (const n of byTier.get(t) ?? []) {
         const ch = children.get(n.id) ?? [];
         const xs = ch.map(c => posX.get(c)).filter((x): x is number => x !== undefined);
-        if (xs.length > 0) posX.set(n.id, xs.reduce((a,b)=>a+b,0)/xs.length);
+        if (xs.length) posX.set(n.id, xs.reduce((a,b)=>a+b,0)/xs.length);
       }
     }
   }
 
-  // ── Build final node list ────────────────────────────────────────
+  // ── Final nodes ───────────────────────────────────────────────
   const out: TopologyNode[] = nodes.map(n => ({
     ...n,
-    x: Math.round(posX.get(n.id) ?? MARGIN_X),
-    y: Math.round(posY.get(n.id) ?? MARGIN_Y),
+    x: Math.round(posX.get(n.id) ?? marginX),
+    y: Math.round(posY.get(n.id) ?? marginY),
   }));
 
-  const maxX  = Math.max(...out.map(n => n.x!));
-  const maxY  = Math.max(...out.map(n => n.y!));
-  const pageW = Math.max(MIN_PAGE_W, maxX + NODE_W + MARGIN_X);
-  const pageH = maxY + NODE_H + 300;
+  const maxX = out.length ? Math.max(...out.map(n => n.x!)) : 1800;
+  const maxY = out.length ? Math.max(...out.map(n => n.y!)) : 1200;
+  const pageW = Math.max(1800, maxX + NODE_W + marginX + 200);
+  const pageH = maxY + NODE_H + 400;
 
-  return { nodes: out, pageW, pageH, tierY0: MARGIN_Y, tierYGap: Y_GAP };
+  return { nodes: out, pageW, pageH, tierY0: marginY, tierYGap: yGap };
 }
 
 // ─────────────────────────────────────────────────────────────────
