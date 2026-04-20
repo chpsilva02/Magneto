@@ -213,66 +213,56 @@ function buildPoLabel(poId: string, members: string[]): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// L2 center label  —  matches reference format exactly (no VLANs in center)
+// L2 center label
 // ─────────────────────────────────────────────────────────────────────────────
 function l2CenterLabel(link: TopologyLink): string {
-  const po = link.port_channel;
+  const parts: string[] = [];
 
-  const srcR = safeRoleLabel(link.src_stp_role);
-  const srcS = safeStateLabel(link.src_stp_state);
-  const dstR = safeRoleLabel(link.dst_stp_role);
-  const dstS = safeStateLabel(link.dst_stp_state);
-
-  const srcNorm    = normalizeStpState(link.src_stp_state ?? '');
-  const dstNorm    = normalizeStpState(link.dst_stp_state ?? '');
-  const srcRoleN   = normalizeStpRole(link.src_stp_role ?? '');
-  const dstRoleN   = normalizeStpRole(link.dst_stp_role ?? '');
-
-  const isBlocked  = srcNorm === StpState.Blocking || srcNorm === StpState.Discarding
-                  || dstNorm === StpState.Blocking || dstNorm === StpState.Discarding
-                  || srcRoleN === StpRole.Alternate || dstRoleN === StpRole.Alternate
-                  || link.isBlocked === true;
-  const isRootPath = srcRoleN === StpRole.Root || dstRoleN === StpRole.Root
-                  || link.isRootPath === true;
-
-  // ── Case 1: Blocked / Alternate ──────────────────────────────
-  if (isBlocked) {
-    const badge = (srcR && srcS) ? `${srcR}/${srcS}`
-                : (dstR && dstS) ? `${dstR}/${dstS}`
-                : 'ALT/BLK';
-    const label = po ? `${po}-${badge}` : badge;
-    return `<font color="${L2_COLORS.blocked}"><b>${label}</b></font>`;
+  // Port-channel ID
+  if (link.port_channel) {
+    parts.push(`<b><font color="${L2_COLORS.bundle}">${link.port_channel}</font></b>`);
   }
 
-  // ── Case 2: Root path ─────────────────────────────────────────
-  if (isRootPath) {
-    const hasBoth = srcR && srcS && dstR && dstS;
-    if (po) {
-      if (hasBoth) {
-        return `<font color="${L2_COLORS.root}"><b>${po}-${srcR}/${srcS} ↔ ${dstR}/${dstS}</b></font>`;
-      }
-      const known = (srcR && srcS) ? `${srcR}/${srcS}` : (dstR && dstS) ? `${dstR}/${dstS}` : '';
-      return `<font color="${L2_COLORS.root}"><b>${po}${known ? `-${known}` : ''}</b></font>`;
-    } else {
-      const known = (srcR && srcS) ? `${srcR}/${srcS}` : (dstR && dstS) ? `${dstR}/${dstS}` : '';
-      return known ? `<font color="${L2_COLORS.root}"><b>${known}</b></font>` : '';
-    }
+  // VLANs
+  const vlans = link.vlansCarried ?? (link.vlan ? link.vlan.split(',').map(v => v.trim()).filter(Boolean) : []);
+  if (vlans.length > 0) {
+    const vlanStr = vlans.length <= 8
+      ? vlans.join(',')
+      : vlans.slice(0, 7).join(',') + '…';
+    parts.push(`<font color="#1a5276" point-size="9">VLANs: ${vlanStr}</font>`);
   }
 
-  // ── Case 3: Port-channel bundle (not root, not blocked) ───────
-  if (po) {
+  // Role/state — ONLY when both sides have real data
+  if (hasBothSidesStpData(link)) {
+    const srcR = safeRoleLabel(link.src_stp_role);
+    const srcS = safeStateLabel(link.src_stp_state);
+    const dstR = safeRoleLabel(link.dst_stp_role);
+    const dstS = safeStateLabel(link.dst_stp_state);
+
+    const srcNorm = normalizeStpState(link.src_stp_state ?? '');
+    const dstNorm = normalizeStpState(link.dst_stp_state ?? '');
+    const isBad  = srcNorm === StpState.Blocking || srcNorm === StpState.Discarding
+                || dstNorm === StpState.Blocking || dstNorm === StpState.Discarding;
+    const isRoot  = normalizeStpRole(link.src_stp_role ?? '') === StpRole.Root
+                || normalizeStpRole(link.dst_stp_role ?? '') === StpRole.Root;
+
+    const color = isBad ? L2_COLORS.blocked : isRoot ? L2_COLORS.root : '#333333';
+    parts.push(`<font color="${color}" point-size="9"><b>${srcR}/${srcS}</b> ↔ <b>${dstR}/${dstS}</b></font>`);
+  } else if (hasAnySideStpData(link)) {
+    // Show only the side that has data
+    const srcR = safeRoleLabel(link.src_stp_role);
+    const srcS = safeStateLabel(link.src_stp_state);
+    const dstR = safeRoleLabel(link.dst_stp_role);
+    const dstS = safeStateLabel(link.dst_stp_state);
     const known = (srcR && srcS) ? `${srcR}/${srcS}` : (dstR && dstS) ? `${dstR}/${dstS}` : '';
-    if (known) {
-      return `<b><font color="${L2_COLORS.bundle}">${po}</font></b><br/><font color="#555" point-size="9">${known}</font>`;
-    }
-    return `<b><font color="${L2_COLORS.bundle}">${po}</font></b>`;
+    if (known) parts.push(`<font color="#555" point-size="9">${known}</font>`);
   }
 
-  // ── Case 4: Normal link with partial STP data ─────────────────
-  const known = (srcR && srcS) ? `${srcR}/${srcS}` : (dstR && dstS) ? `${dstR}/${dstS}` : '';
-  if (known) return `<font color="${L2_COLORS.normal}"><b>${known}</b></font>`;
+  // Path indicators
+  if (link.isRootPath) parts.push(`<font color="${L2_COLORS.root}" point-size="8">▶ Root path</font>`);
+  if (link.isBlocked)  parts.push(`<font color="${L2_COLORS.blocked}" point-size="8">✖ Blocked</font>`);
 
-  return '';
+  return parts.join('<br/>');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,14 +293,13 @@ function linkCenterLabel(link: TopologyLink, layer: string): string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Port endpoint label
-// Reference format (L2): plain text  "🟢   Po40-DP/FWD"  or  "Gi1/14"
 // ─────────────────────────────────────────────────────────────────────────────
 function portLabel(
   port: string,
   stpRole?: string,
   stpState?: string,
   layer?: string,
-  _memberPorts?: string[],
+  memberPorts?: string[],
 ): string {
   if (!port) return '';
   if (layer !== 'L2') return port;
@@ -320,19 +309,36 @@ function portLabel(
   const stateNorm  = normalizeStpState(stpState ?? '');
   const roleNorm   = normalizeStpRole(stpRole ?? '');
 
-  // State icon — 3 spaces after emoji to match reference spacing
+  // State icon
   let icon = '';
-  if      (stateNorm === StpState.Forwarding)                                    icon = '🟢   ';
-  else if (stateNorm === StpState.Blocking || stateNorm === StpState.Discarding) icon = '🔴   ';
-  else if (roleNorm  === StpRole.Alternate)                                       icon = '🟡   ';
-  else if (stateNorm !== StpState.Unknown && stateNorm !== StpState.Disabled)    icon = '🟠   ';
+  if      (stateNorm === StpState.Forwarding)                                  icon = '🟢 ';
+  else if (stateNorm === StpState.Blocking || stateNorm === StpState.Discarding) icon = '🔴 ';
+  else if (roleNorm  === StpRole.Alternate)                                    icon = '🟡 ';
+  else if (stateNorm !== StpState.Unknown && stateNorm !== StpState.Disabled)  icon = '🟠 ';
 
-  // STP badge: "-DP/FWD", "-RP/FWD", etc.
+  // Port name — compact single line for Po
+  const isPoPort = /^Po\d/i.test(port);
+  let portStr: string;
+  if (isPoPort && memberPorts && memberPorts.length > 0) {
+    // Format: Po40Eth1/1/27-29   (no space, no br)
+    portStr = buildPoLabel(port, memberPorts);
+  } else {
+    portStr = port;
+  }
+
+  // Format: 🟢 Po46-DP/FWD  or  🟢 Gi1/0/1-RP/FWD
+  const color = stateNorm === StpState.Blocking || stateNorm === StpState.Discarding
+    ? L2_COLORS.blocked
+    : roleNorm === StpRole.Root ? L2_COLORS.root : '#333333';
+
   const stpBadge = (roleLabel && stateLabel) ? `-${roleLabel}/${stateLabel}` : '';
 
-  // Plain text — no HTML wrapping, exactly as in reference
-  return `${icon}${port}${stpBadge}`;
+  if (stpBadge) {
+    return `${icon}<b><font color="${color}">${port}${stpBadge}</font></b>`;
+  }
+  return `${icon}<b>${port}</b>`;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // L2 edge style (visual differentiation by STP state)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -348,7 +354,8 @@ function l2EdgeStyle(link: TopologyLink, srcPin: {x:number;y:number}, tgtPin: {x
   const isAlt      = srcRole === StpRole.Alternate || dstRole === StpRole.Alternate;
   const isRootPath = srcRole === StpRole.Root || dstRole === StpRole.Root || link.isRootPath === true;
   const isBundle   = !!link.port_channel || !!link.logicalBundleId;
-  const isDisabled = srcState === StpState.Disabled && dstState === StpState.Disabled;
+  const isDisabled = srcState === StpState.Disabled && dstState === StpState.Disabled
+                  && srcState !== StpState.Unknown;
 
   let strokeColor = L2_COLORS.normal;
   let strokeWidth = 1.5;
@@ -383,84 +390,64 @@ function l2EdgeStyle(link: TopologyLink, srcPin: {x:number;y:number}, tgtPin: {x
 // Legends
 // ─────────────────────────────────────────────────────────────────────────────
 function addL1Legend(rootCell: any, pageId: string, x: number, y: number) {
-  // Matches reference exactly: bold title, SVG line sample, hr separators
+  // Exactly matches Image 1: bold title, line sample, label format note
   const html = [
-    '<b style="font-size:12px">L1 - Physical Legend</b>',
-    '<hr style="border:0;border-top:2px solid #333;margin:5px 0 4px"/>',
-    '<table style="font-size:11px;border-collapse:collapse">',
-    '<tr>',
-    '<td style="width:82px;padding:1px 6px 1px 0">',
-    '<svg width="78" height="10"><line x1="0" y1="5" x2="78" y2="5" stroke="#333" stroke-width="2.5"/></svg>',
-    '</td>',
-    '<td style="padding:1px 4px">CDP / LLDP link</td>',
-    '</tr>',
+    '<table style="font-size:11px;border-collapse:collapse;width:100%;font-family:Helvetica,Arial,sans-serif;">',
+    '<tr><td colspan="2" style="font-weight:bold;font-size:12px;padding:4px 6px 6px 6px;">L1 - Physical Legend</td></tr>',
+    '<tr><td style="padding:2px 8px;width:60px;"><hr style="border:2px solid #505050;margin:0;"/></td>',
+    '    <td style="padding:2px 6px;">CDP / LLDP link</td></tr>',
+    '<tr><td colspan="2" style="border-top:1px solid #cccccc;padding:4px 6px;font-size:10px;color:#444444;">',
+    'Labels: local_port ↔ remote_port</td></tr>',
     '</table>',
-    '<hr style="border:0;border-top:1px solid #ccc;margin:4px 0 3px"/>',
-    '<span style="font-size:10px;color:#444">Labels: local_port &#x2194; remote_port</span>',
   ].join('');
 
   const leg = rootCell.ele('mxCell', {
     id: `${pageId}_l1_legend`, value: html,
-    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888;fillColor=#fff;rounded=1;arcSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;',
+    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888888;fillColor=#ffffff;rounded=1;arcSize=8;align=left;verticalAlign=top;spacingLeft=0;',
     vertex: '1', parent: `root_${pageId}_1`,
   });
-  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '258', height: '72', as: 'geometry' });
+  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '240', height: '90', as: 'geometry' });
 }
 
 function addL2Legend(rootCell: any, pageId: string, x: number, y: number) {
-  // Matches reference exactly: SVG lines, dot bullets, footer
+  // Matches Image 2 exactly: green root, red dashed blocked, orange port-channel, dark normal
   const html = [
-    '<b style="font-size:12px">L2 - STP Legend</b>',
-    '<table style="font-size:11px;border-collapse:collapse;margin-top:5px">',
+    '<table style="font-size:11px;border-collapse:collapse;width:100%;font-family:Helvetica,Arial,sans-serif;">',
+    '<tr><td colspan="2" style="font-weight:bold;font-size:12px;padding:4px 6px 6px 6px;">L2 - STP Legend</td></tr>',
 
-    // Root path — solid green line
-    '<tr>',
-    '<td style="width:82px;padding:3px 6px 3px 0">',
-    '<svg width="78" height="10"><line x1="0" y1="5" x2="78" y2="5" stroke="#1A6B3C" stroke-width="3"/></svg>',
-    '</td>',
-    '<td style="padding:3px 4px">Root path (RP/FWD)</td>',
-    '</tr>',
+    // Root path — solid green
+    '<tr><td style="padding:3px 8px;width:80px;"><hr style="border:2.5px solid #1A6B3C;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Root path (RP/FWD)</td></tr>',
 
-    // Blocked/ALT — dashed red line
-    '<tr>',
-    '<td style="padding:3px 6px 3px 0">',
-    '<svg width="78" height="10"><line x1="0" y1="5" x2="78" y2="5" stroke="#C0392B" stroke-width="2" stroke-dasharray="8,5"/></svg>',
-    '</td>',
-    '<td style="padding:3px 4px;color:#C0392B">Blocked / ALT</td>',
-    '</tr>',
+    // Blocked/ALT — dashed red
+    '<tr><td style="padding:3px 8px;"><span style="color:#C0392B;font-size:14px;letter-spacing:2px;">- - - - -</span></td>',
+    '    <td style="padding:3px 6px;color:#C0392B;">Blocked / ALT</td></tr>',
 
-    // Port-channel — solid orange
-    '<tr>',
-    '<td style="padding:3px 6px 3px 0">',
-    '<svg width="78" height="10"><line x1="0" y1="5" x2="78" y2="5" stroke="#FFB570" stroke-width="3"/></svg>',
-    '</td>',
-    '<td style="padding:3px 4px">Port-channel bundle</td>',
-    '</tr>',
+    // Port-channel — solid orange #FFB570
+    '<tr><td style="padding:3px 8px;"><hr style="border:2.5px solid #FFB570;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Port-channel bundle</td></tr>',
 
     // Normal FWD — dark blue
-    '<tr>',
-    '<td style="padding:3px 6px 3px 0">',
-    '<svg width="78" height="10"><line x1="0" y1="5" x2="78" y2="5" stroke="#1A5276" stroke-width="2"/></svg>',
-    '</td>',
-    '<td style="padding:3px 4px">Normal FWD link</td>',
-    '</tr>',
+    '<tr><td style="padding:3px 8px;"><hr style="border:1.5px solid #1A5276;margin:0;"/></td>',
+    '    <td style="padding:3px 6px;">Normal FWD link</td></tr>',
 
     // State dots
-    '<tr><td style="padding:3px 6px 3px 0;font-size:18px;color:#27AE60;line-height:1">&#x25CF;</td><td style="padding:3px 4px">Forwarding (FWD)</td></tr>',
-    '<tr><td style="padding:3px 6px 3px 0;font-size:18px;color:#C0392B;line-height:1">&#x25CF;</td><td style="padding:3px 4px">Blocking / DISC</td></tr>',
-    '<tr><td style="padding:3px 6px 3px 0;font-size:18px;color:#E67E22;line-height:1">&#x25CF;</td><td style="padding:3px 4px">Alternate (ALT)</td></tr>',
+    '<tr><td style="padding:3px 8px;font-size:16px;">🟢</td><td style="padding:3px 6px;">Forwarding (FWD)</td></tr>',
+    '<tr><td style="padding:3px 8px;font-size:16px;">🔴</td><td style="padding:3px 6px;">Blocking / DISC</td></tr>',
+    '<tr><td style="padding:3px 8px;font-size:16px;">🟡</td><td style="padding:3px 6px;">Alternate (ALT)</td></tr>',
 
+    // Abbreviations footer
+    '<tr><td colspan="2" style="border-top:1px solid #cccccc;padding:4px 6px;font-size:10px;color:#444444;">',
+    'RP=Root Port · DP=Designated · ALT=Alternate · BK=Backup</td></tr>',
     '</table>',
-    '<hr style="border:0;border-top:1px solid #ccc;margin:4px 0 3px"/>',
-    '<span style="font-size:9px;color:#555">RP=Root Port &nbsp;&#xB7;&nbsp; DP=Designated &nbsp;&#xB7;&nbsp; ALT=Alternate &nbsp;&#xB7;&nbsp; BK=Backup</span>',
   ].join('');
 
   const leg = rootCell.ele('mxCell', {
     id: `${pageId}_l2_legend`, value: html,
-    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888;fillColor=#fff;rounded=1;arcSize=8;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;',
+    style: 'text;html=1;whiteSpace=wrap;strokeColor=#888888;fillColor=#ffffff;rounded=1;arcSize=5;align=left;verticalAlign=top;spacingLeft=0;',
     vertex: '1', parent: `root_${pageId}_1`,
   });
-  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '272', height: '236', as: 'geometry' });
+  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '270', height: '245', as: 'geometry' });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -479,6 +466,9 @@ function getMemberPorts(
   allLinks: TopologyLink[],
 ): string[] {
   // Prefer explicitly stored member port lists (set by L2 builder)
+  const explicit = side === 'src' ? link.src_member_ports : link.dst_member_ports;
+  if (explicit && explicit.length > 0) return explicit;
+
   // Fallback: scan L1 links between the same pair that feed this bundle
   if (!link.logicalBundleId) return [];
   const deviceId = side === 'src' ? link.source : link.target;
@@ -548,7 +538,7 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
         width: String(NODE_W), height: String(NODE_H), as: 'geometry',
       });
 
-      // ROOT BRIDGE badge with VLAN list (L2) — matches reference: 140×34, "ROOT BRIDGE" text
+      // ROOT badge with VLAN list (L2)
       if (layer === 'L2' && node.isRoot) {
         const vlans     = node.stpRootForVlans ?? [];
         const instances = node.stpRootForInstances ?? [];
@@ -557,24 +547,19 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
           : instances.length > 0
           ? `Inst: ${instances.slice(0, 5).join(',')}`
           : '';
-
-        // Reference: always width=140, height=34, y=node.y-42
-        const BADGE_W = 140;
-        const BADGE_H = 34;
-        const badgeX  = (node.x ?? 0) + NODE_W / 2 - BADGE_W / 2;
-        const badgeY  = (node.y ?? 0) - BADGE_H - 8;   // 8px gap above node top
-
-        // Reference format: <b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b><br/><font ...>VLANs: ...</font>
+        const badgeW = vlanStr ? 120 : 36;
+        const badgeX = (node.x ?? 0) + NODE_W / 2 - badgeW / 2;
+        const badgeY = (node.y ?? 0) - 24;
         const badgeVal = vlanStr
-          ? `<b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b><br/><font color="#D5F5E3" style="font-size:9px">${vlanStr}</font>`
-          : `<b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b>`;
+          ? `<font style="font-size:8px;font-weight:bold;color:#ffffff;">ROOT</font><br/><font style="font-size:7px;color:#d5f5e3;">${vlanStr}</font>`
+          : `<font style="font-size:8px;font-weight:bold;color:#ffffff;">ROOT</font>`;
 
         const rb = rootCell.ele('mxCell', {
-          id: `L2_rb_${node.id}`, value: badgeVal,
-          style: `text;html=1;strokeColor=${L2_COLORS.badge_root};fillColor=${L2_COLORS.badge_root};align=center;verticalAlign=middle;rounded=1;arcSize=20;fontStyle=1;fontSize=9;`,
+          id: `${nid}_root_badge`, value: badgeVal,
+          style: `text;html=1;strokeColor=${L2_COLORS.badge_root};fillColor=${L2_COLORS.badge_root};fontColor=#ffffff;align=center;verticalAlign=middle;fontSize=8;fontStyle=1;rounded=1;`,
           vertex: '1', parent: `root_${layer}_1`,
         });
-        rb.ele('mxGeometry', { x: String(badgeX), y: String(badgeY), width: String(BADGE_W), height: String(BADGE_H), as: 'geometry' });
+        rb.ele('mxGeometry', { x: String(badgeX), y: String(badgeY), width: String(badgeW), height: '18', as: 'geometry' });
       }
 
       // Routing table (L3)
