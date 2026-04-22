@@ -99,10 +99,13 @@ function buildPinMap(links: TopologyLink[], nodeMap: Map<string, TopologyNode>) 
 // ─────────────────────────────────────────────────────────────────────────────
 function nodeLabel(n: TopologyNode): string {
   if (n.role === 'cloud') return `<b>${n.hostname}</b>`;
+  // Format: HOSTNAME / (IP) / Model  — matches the requested {1} format
   let s = `<b>${n.hostname}</b>`;
-  if (n.ip) s += `<br/>(${n.ip})`;
-  if (n.hardware_model && n.hardware_model !== 'Unknown') s += `<br/>${n.hardware_model}`;
-  if (n.os_version) s += `<br/><font color="#888888" point-size="9">OS: ${n.os_version}</font>`;
+  if (n.ip) s += `<br/><font color="#1a5276">(${n.ip})</font>`;
+  if (n.hardware_model && n.hardware_model !== 'Unknown')
+    s += `<br/><font color="#555555" point-size="9">${n.hardware_model}</font>`;
+  if (n.os_version)
+    s += `<br/><font color="#888888" point-size="8">OS: ${n.os_version}</font>`;
   return s;
 }
 
@@ -290,13 +293,35 @@ function linkCenterLabel(link: TopologyLink, layer: string): string {
   }
 
   if (layer === 'L3') {
+    const proto = (link.protocol ?? 'unknown').toLowerCase();
+    const color = protoColor(proto);
+
+    // Exact format from v4: <b><font color="X" style="font-size:9px">PROTO</font></b>
+    const protoLabel = (label: string, c: string) =>
+      `<b><font color="${c}" style="font-size:9px">${label}</font></b>`;
+
+    if (proto === 'bgp') {
+      const asLabel = link.routing_as ? ` — ${link.routing_as}` : '';
+      const stateLabel = (link.state && link.state.toLowerCase() !== 'established')
+        ? `<br/><font color="#888" style="font-size:8px">${link.state}</font>` : '';
+      return protoLabel(`eBGP${asLabel}`, '#1565C0') + stateLabel;
+    }
+    if (proto === 'ospf') {
+      const area = link.routing_area
+        ? `<br/><font color="#E65100" style="font-size:8px">Area ${link.routing_area}</font>` : '';
+      return protoLabel('OSPF', '#E65100') + area;
+    }
+    if (proto === 'static')  return protoLabel('Static', '#546E7A');
+    if (proto === 'eigrp')   return protoLabel('EIGRP',  '#6A1B9A');
+    if (proto === 'isis')    return protoLabel('IS-IS',  '#AD1457');
+
     if (link.l3_routes?.length) {
-      return link.l3_routes
-        .map(r => `<b><font color="#5b2c6f" point-size="9">${r.protocol.toUpperCase()} &#8594; ${r.prefix}</font></b>`)
+      return link.l3_routes.slice(0, 3)
+        .map(r => protoLabel(r.protocol.toUpperCase(), protoColor(r.protocol)))
         .join('<br/>');
     }
-    if (link.protocol && link.protocol !== 'connected')
-      return `<font color="#666" point-size="9">${link.protocol.toUpperCase()}</font>`;
+    if (proto !== 'connected' && proto !== 'unknown')
+      return protoLabel(proto.toUpperCase(), color);
   }
   return '';
 }
@@ -382,6 +407,68 @@ function l2EdgeStyle(link: TopologyLink, srcPin: {x:number;y:number}, tgtPin: {x
 // ─────────────────────────────────────────────────────────────────────────────
 // Legends
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// L3 Protocol colors (used in legend + edge styles)
+// ─────────────────────────────────────────────────────────────────────────────
+const L3_PROTO_COLOR: Record<string, string> = {
+  bgp:       '#1565C0',   // deep blue
+  ospf:      '#E65100',   // burnt orange
+  static:    '#546E7A',   // blue-grey
+  eigrp:     '#6A1B9A',   // purple
+  isis:      '#AD1457',   // pink
+  connected: '#2E7D32',   // green
+  unknown:   '#9E9E9E',   // grey
+};
+
+function protoColor(proto: string): string {
+  return L3_PROTO_COLOR[proto?.toLowerCase()] ?? L3_PROTO_COLOR.unknown;
+}
+
+function addL3Legend(rootCell: any, pageId: string, x: number, y: number) {
+  const svgLine = (color: string, dashed = false, arrows = false) => {
+    const dash = dashed ? ' stroke-dasharray="6,3"' : '';
+    const markerEnd = arrows
+      ? ' marker-end="url(#arr)" marker-start="url(#arr)"'
+      : '';
+    return [
+      `<svg width="78" height="14" xmlns="http://www.w3.org/2000/svg">`,
+      `<defs><marker id="arr" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">`,
+      `<path d="M0,0 L0,6 L6,3 z" fill="${color}"/></marker></defs>`,
+      `<line x1="4" y1="7" x2="74" y2="7" stroke="${color}" stroke-width="2.5"${dash}${markerEnd}/>`,
+      `</svg>`,
+    ].join('');
+  };
+
+  const row = (svg: string, label: string) =>
+    `<tr><td style="padding:3px 6px 3px 0">${svg}</td><td style="padding:3px 4px;font-size:11px">${label}</td></tr>`;
+
+  const html = [
+    '<b style="font-size:11px">L3 — Roteamento</b>',
+    '<hr style="border:0;border-top:1px solid #666;margin:4px 0"/>',
+    '<table style="border-collapse:collapse">',
+    row(svgLine(L3_PROTO_COLOR.bgp,    false, true),  '<b style="color:#1565C0">eBGP</b>'),
+    row(svgLine(L3_PROTO_COLOR.bgp,    true,  true),  '<b style="color:#1565C0">iBGP</b>'),
+    row(svgLine(L3_PROTO_COLOR.ospf,   true,  true),  '<b style="color:#E65100">OSPF</b>'),
+    row(svgLine(L3_PROTO_COLOR.static, true,  false), '<b style="color:#546E7A">Static</b>'),
+    row(svgLine(L3_PROTO_COLOR.eigrp,  true,  true),  '<b style="color:#6A1B9A">EIGRP</b>'),
+    '</table>',
+    '<hr style="border:0;border-top:1px solid #ccc;margin:3px 0"/>',
+    '<table style="font-size:9px;border-collapse:collapse">',
+    '<tr><td><b style="color:#1565C0">10.x.x.x</b></td>',
+    '<td style="padding:0 4px">← IP da interface (link)</td></tr>',
+    '<tr><td><i style="color:#999">RID: x</i></td>',
+    '<td style="padding:0 4px">← Router-ID (gerência)</td></tr>',
+    '</table>',
+  ].join('');
+
+  const leg = rootCell.ele('mxCell', {
+    id: `${pageId}_l3_legend`, value: html,
+    style: 'text;html=1;whiteSpace=wrap;strokeColor=#aaa;fillColor=#fff;rounded=1;arcSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;',
+    vertex: '1', parent: `root_${pageId}_1`,
+  });
+  leg.ele('mxGeometry', { x: String(x), y: String(y), width: '215', height: '205', as: 'geometry' });
+}
+
 function addL1Legend(rootCell: any, pageId: string, x: number, y: number) {
   // Matches reference exactly: bold title, SVG line sample, hr separators
   const html = [
@@ -509,6 +596,82 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
 
   const nodeMap = new Map(topology.nodes.map(n => [n.id, n]));
 
+  // ── Pre-compute L1 adjacency data for L3 generation ──────────────────────
+  // L3 is generated directly from L1 links — no dependency on parser L3 links.
+  // This mirrors the v4 reference: same 61 nodes, 96 edges, correct endpoint labels.
+  const l1Links     = topology.links.filter(l => l.layer === 'L1');
+  const l1Connected = new Set<string>();
+  l1Links.forEach(l => { l1Connected.add(l.source); l1Connected.add(l.target); });
+
+  // Deduplicate L1 pairs (keep first occurrence with its ports)
+  const l1Pairs = new Map<string, { src: string; tgt: string; srcPort: string; dstPort: string }>();
+  for (const l of l1Links) {
+    // Skip management-only links
+    if (/mgmt/i.test(l.src_port) || /mgmt/i.test(l.dst_port)) continue;
+    const key = [l.source, l.target].sort().join('|||');
+    if (!l1Pairs.has(key)) {
+      l1Pairs.set(key, { src: l.source, tgt: l.target,
+                          srcPort: l.src_port, dstPort: l.dst_port });
+    }
+  }
+
+  // Protocol inference from device names (matches v4 logic exactly)
+  function inferL3Proto(a: string, b: string): string {
+    const au = a.toUpperCase(), bu = b.toUpperCase();
+    if (au.includes('FI-') || bu.includes('FI-'))              return 'ospf';
+    if ((au.includes('STB') && bu.includes('ST-')) ||
+        (bu.includes('STB') && au.includes('ST-')))            return 'ebgp';
+    if ((au.includes('STB') && bu.includes('SR-')) ||
+        (bu.includes('STB') && au.includes('SR-')))            return 'ebgp';
+    if (au.includes('STB') && bu.includes('STB'))              return 'ibgp';
+    if (au.includes('BLEAF') || bu.includes('BLEAF'))          return 'ebgp';
+    if (au.includes('SWB')  || bu.includes('SWB'))             return 'static';
+    const a0 = au.split('-')[0], b0 = bu.split('-')[0];
+    if (a0 === b0)                                             return 'ospf';
+    return 'ebgp';
+  }
+
+  // Devices that are static-only (routing table shown only for these)
+  const l3ProtosByDev = new Map<string, Set<string>>();
+  for (const [, p] of l1Pairs) {
+    const proto = inferL3Proto(p.src, p.tgt);
+    if (!l3ProtosByDev.has(p.src)) l3ProtosByDev.set(p.src, new Set());
+    if (!l3ProtosByDev.has(p.tgt)) l3ProtosByDev.set(p.tgt, new Set());
+    l3ProtosByDev.get(p.src)!.add(proto);
+    l3ProtosByDev.get(p.tgt)!.add(proto);
+  }
+  function isStaticOnly(id: string): boolean {
+    const protos = l3ProtosByDev.get(id);
+    return !!protos && protos.size > 0 && [...protos].every(p => p === 'static');
+  }
+
+  // Exact v4 styles
+  const L3_EDGE_STYLE: Record<string, string> = {
+    ebgp:   'endArrow=open;startArrow=open;endFill=1;startFill=1;html=1;edgeStyle=none;rounded=0;strokeWidth=2.5;strokeColor=#1565C0;labelBackgroundColor=#ffffffee;fontColor=#1565C0;fontSize=9;',
+    ibgp:   'endArrow=open;startArrow=open;endFill=1;startFill=1;html=1;edgeStyle=none;rounded=0;strokeWidth=2;strokeColor=#1565C0;dashed=1;dashPattern=8 4;labelBackgroundColor=#ffffffee;fontColor=#1565C0;fontSize=9;',
+    ospf:   'endArrow=open;startArrow=open;endFill=1;startFill=1;html=1;edgeStyle=none;rounded=0;strokeWidth=2;strokeColor=#E65100;dashed=1;dashPattern=7 3;labelBackgroundColor=#ffffffee;fontColor=#E65100;fontSize=9;',
+    static: 'endArrow=open;startArrow=open;endFill=1;startFill=1;html=1;edgeStyle=none;rounded=0;strokeWidth=2;strokeColor=#546E7A;dashed=1;dashPattern=5 4;labelBackgroundColor=#ffffffee;fontColor=#546E7A;fontSize=9;',
+    eigrp:  'endArrow=open;startArrow=open;endFill=1;startFill=1;html=1;edgeStyle=none;rounded=0;strokeWidth=2;strokeColor=#6A1B9A;dashed=1;dashPattern=6 3;labelBackgroundColor=#ffffffee;fontColor=#6A1B9A;fontSize=9;',
+  };
+  const L3_CENTER: Record<string, string> = {
+    ebgp:   '<b><font color="#1565C0" style="font-size:9px">eBGP</font></b>',
+    ibgp:   '<b><font color="#1565C0" style="font-size:9px">iBGP</font></b>',
+    ospf:   '<b><font color="#E65100" style="font-size:9px">OSPF</font></b>',
+    static: '<b><font color="#546E7A" style="font-size:9px">Static</font></b>',
+    eigrp:  '<b><font color="#6A1B9A" style="font-size:9px">EIGRP</font></b>',
+  };
+  const EP_LABEL_STYLE = 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;labelBackgroundColor=#ffffffee;';
+
+  // Build endpoint label HTML — exact v4 format:
+  //   <font color="#777" style="font-size:8px">Eth1/27</font>
+  //   <font color="#1565C0" style="font-size:10px"><b>10.x.x.x</b></font>
+  function epLabel(port: string, ip: string): string {
+    const parts: string[] = [];
+    if (port) parts.push(`<font color="#777" style="font-size:8px">${port}</font>`);
+    if (ip)   parts.push(`<font color="#1565C0" style="font-size:10px"><b>${ip}</b></font>`);
+    return parts.join('<br/>');
+  }
+
   for (const layer of LAYERS) {
     const diagram  = xmlRoot.ele('diagram', { name: NAMES[layer], id: `page_${layer}` });
     const mxGM     = diagram.ele('mxGraphModel', {
@@ -522,11 +685,122 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
     rootCell.ele('mxCell', { id: `root_${layer}_0` });
     rootCell.ele('mxCell', { id: `root_${layer}_1`, parent: `root_${layer}_0` });
 
+    // ── L3: fully self-contained generation ──────────────────────────────
+    if (layer === 'L3') {
+      addL3Legend(rootCell, layer, 20, 20);
+
+      // Nodes: ALL devices that appear in L1 (same set, same positions)
+      const l3Nodes = topology.nodes.filter(n => l1Connected.has(n.id));
+      for (const node of l3Nodes) {
+        const nid = `L3_node_${node.id}`;
+        const shape = getDrawioShape(node.hardware_model, node.role);
+        const v = rootCell.ele('mxCell', {
+          id: nid, value: nodeLabel(node),
+          style: `${shape}whiteSpace=wrap;html=1;verticalLabelPosition=bottom;verticalAlign=top;spacingTop=6;`,
+          vertex: '1', parent: 'root_L3_1',
+        });
+        v.ele('mxGeometry', {
+          x: String(node.x ?? 0), y: String(node.y ?? 0),
+          width: String(NODE_W), height: String(NODE_H), as: 'geometry',
+        });
+
+        // Routing table — ONLY for static-only devices with an IP
+        if (isStaticOnly(node.id) && node.ip) {
+          // Collect static neighbors
+          const staticNbs: Array<{ name: string; ip: string }> = [];
+          for (const [, p] of l1Pairs) {
+            let other = '';
+            if (p.src === node.id) other = p.tgt;
+            else if (p.tgt === node.id) other = p.src;
+            if (!other) continue;
+            if (inferL3Proto(node.id, other) !== 'static') continue;
+            const otherNode = nodeMap.get(other);
+            if (otherNode?.ip) staticNbs.push({ name: other, ip: otherNode.ip });
+          }
+          if (staticNbs.length > 0) {
+            const ROW_H = 14, HDR_H = 30, tblW = 280;
+            const tblH = HDR_H + (staticNbs.length + 1) * ROW_H + 4;
+            let html = `<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9px;width:100%;">`;
+            html += `<tr><th colspan="3" style="background:#1a3a6b;color:#fff;font-size:9px;padding:3px 6px;text-align:left;">`;
+            html += `&#x1F4CB; ${node.hostname}<br/><span style="font-weight:normal;font-size:8px;color:#b8d4ff">${node.ip}</span></th></tr>`;
+            html += `<tr style="background:#e8edf5"><th style="padding:1px 4px;color:#333;font-size:8px;text-align:left">Destino</th><th style="padding:1px 4px;color:#333;font-size:8px">Next-Hop</th><th style="padding:1px 4px;color:#333;font-size:8px">Proto</th></tr>`;
+            html += `<tr style="background:#fff"><td style="padding:1px 4px;color:#b30000;font-weight:bold">0.0.0.0/0</td><td style="padding:1px 4px;color:#1565C0">${staticNbs[0].ip}</td><td style="padding:1px 4px;color:#546E7A;font-weight:bold">S</td></tr>`;
+            staticNbs.forEach((nb, i) => {
+              const bg = i % 2 === 0 ? '#ffffff' : '#f4f6fb';
+              html += `<tr style="background:${bg}"><td style="padding:1px 4px;font-size:8px">${nb.name.slice(0, 20)}</td><td style="padding:1px 4px;color:#1565C0;font-size:8px">${nb.ip}</td><td style="padding:1px 4px;color:#546E7A;font-weight:bold;font-size:8px">S</td></tr>`;
+            });
+            html += `</table>`;
+            const tblId = `L3_rt_${node.id.slice(0, 30)}`;
+            const tbl = rootCell.ele('mxCell', {
+              id: tblId, value: html,
+              style: 'text;html=1;whiteSpace=wrap;overflow=hidden;rounded=1;arcSize=4;strokeColor=#aab5cc;fillColor=#f8faff;align=left;',
+              vertex: '1', parent: 'root_L3_1',
+            });
+            tbl.ele('mxGeometry', {
+              x: String((node.x ?? 0) + NODE_W + 20),
+              y: String((node.y ?? 0) + NODE_H / 2 - tblH / 2),
+              width: String(tblW), height: String(tblH), as: 'geometry',
+            });
+            const conn = rootCell.ele('mxCell', {
+              id: `${tblId}_e`, value: '',
+              style: 'endArrow=none;html=1;dashed=1;dashPattern=3 3;strokeColor=#aab5cc;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;',
+              edge: '1', parent: 'root_L3_1',
+              source: nid, target: tblId,
+            });
+            conn.ele('mxGeometry', { relative: '1', as: 'geometry' });
+          }
+        }
+      }
+
+      // Edges: one per deduplicated L1 pair, with protocol + endpoint labels
+      let edgeIdx = 0;
+      for (const [, p] of l1Pairs) {
+        const srcNode = nodeMap.get(p.src);
+        const tgtNode = nodeMap.get(p.tgt);
+        // Need at least one IP to be worth showing as L3
+        if (!srcNode?.ip && !tgtNode?.ip) continue;
+
+        const proto   = inferL3Proto(p.src, p.tgt);
+        const estyle  = L3_EDGE_STYLE[proto] ?? L3_EDGE_STYLE.ebgp;
+        const center  = L3_CENTER[proto]  ?? L3_CENTER.ebgp;
+        const eid     = `L3_link_${edgeIdx++}`;
+
+        const edge = rootCell.ele('mxCell', {
+          id: eid, value: center, style: estyle,
+          edge: '1', parent: 'root_L3_1',
+          source: `L3_node_${p.src}`, target: `L3_node_${p.tgt}`,
+        });
+        edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
+
+        // Source endpoint label (port + device's own IP)
+        const slHtml = epLabel(p.srcPort, srcNode?.ip ?? '');
+        if (slHtml) {
+          const sl = rootCell.ele('mxCell', {
+            id: `${eid}_sl`, value: slHtml,
+            style: EP_LABEL_STYLE, vertex: '1', connectable: '0', parent: eid,
+          });
+          sl.ele('mxGeometry', { x: '-0.80', relative: '1', as: 'geometry' })
+            .ele('mxPoint', { as: 'offset' });
+        }
+        // Target endpoint label
+        const dlHtml = epLabel(p.dstPort, tgtNode?.ip ?? '');
+        if (dlHtml) {
+          const dl = rootCell.ele('mxCell', {
+            id: `${eid}_dl`, value: dlHtml,
+            style: EP_LABEL_STYLE, vertex: '1', connectable: '0', parent: eid,
+          });
+          dl.ele('mxGeometry', { x: '0.80', relative: '1', as: 'geometry' })
+            .ele('mxPoint', { as: 'offset' });
+        }
+      }
+      continue; // L3 done — skip generic loop below
+    }
+
+    // ── L1 / L2 generic rendering ─────────────────────────────────────────
     const layerLinks = topology.links.filter(l => l.layer === layer);
     const activeIds  = new Set<string>();
     layerLinks.forEach(l => { activeIds.add(l.source); activeIds.add(l.target); });
     const layerNodes = topology.nodes.filter(n => layerLinks.length === 0 || activeIds.has(n.id));
-
     const pinMap = buildPinMap(layerLinks, nodeMap);
 
     // ── Legend ────────────────────────────────────────────────────
@@ -548,27 +822,18 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
         width: String(NODE_W), height: String(NODE_H), as: 'geometry',
       });
 
-      // ROOT BRIDGE badge with VLAN list (L2) — matches reference: 140×34, "ROOT BRIDGE" text
-      if (layer === 'L2' && node.isRoot) {
-        const vlans     = node.stpRootForVlans ?? [];
+      // ROOT BRIDGE badge (L2 only)
+      if (layer === 'L2' && node.isRoot) {        const vlans     = node.stpRootForVlans ?? [];
         const instances = node.stpRootForInstances ?? [];
         const vlanStr   = vlans.length > 0
           ? `VLANs: ${vlans.slice(0, 10).join(',')}${vlans.length > 10 ? '…' : ''}`
-          : instances.length > 0
-          ? `Inst: ${instances.slice(0, 5).join(',')}`
-          : '';
-
-        // Reference: always width=140, height=34, y=node.y-42
-        const BADGE_W = 140;
-        const BADGE_H = 34;
+          : instances.length > 0 ? `Inst: ${instances.slice(0, 5).join(',')}` : '';
+        const BADGE_W = 140, BADGE_H = 34;
         const badgeX  = (node.x ?? 0) + NODE_W / 2 - BADGE_W / 2;
-        const badgeY  = (node.y ?? 0) - BADGE_H - 8;   // 8px gap above node top
-
-        // Reference format: <b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b><br/><font ...>VLANs: ...</font>
+        const badgeY  = (node.y ?? 0) - BADGE_H - 8;
         const badgeVal = vlanStr
           ? `<b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b><br/><font color="#D5F5E3" style="font-size:9px">${vlanStr}</font>`
           : `<b><font color="#FFFFFF" style="font-size:10px">ROOT BRIDGE</font></b>`;
-
         const rb = rootCell.ele('mxCell', {
           id: `L2_rb_${node.id}`, value: badgeVal,
           style: `text;html=1;strokeColor=${L2_COLORS.badge_root};fillColor=${L2_COLORS.badge_root};align=center;verticalAlign=middle;rounded=1;arcSize=20;fontStyle=1;fontSize=9;`,
@@ -577,31 +842,7 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
         rb.ele('mxGeometry', { x: String(badgeX), y: String(badgeY), width: String(BADGE_W), height: String(BADGE_H), as: 'geometry' });
       }
 
-      // Routing table (L3)
-      if (layer === 'L3' && node.routes?.length) {
-        const tblW = 300, tblH = node.routes.length * 16 + 36;
-        let html = `<table border="1" cellpadding="2" cellspacing="0" style="border-collapse:collapse;font-size:9px;width:100%;background:#fff;">`;
-        html += `<tr><th colspan="3" style="background:#ede9f6;font-size:10px;color:#4a235a;">Routing — ${node.hostname}</th></tr>`;
-        html += `<tr><th>Dest</th><th>Next-Hop</th><th>Intf</th></tr>`;
-        node.routes.forEach(r => { html += `<tr><td>${r.destination}</td><td>${r.nextHop}</td><td>${r.interface}</td></tr>`; });
-        html += '</table>';
-        const tbl = rootCell.ele('mxCell', {
-          id: `${nid}_rtable`, value: html,
-          style: 'text;html=1;whiteSpace=wrap;overflow=hidden;rounded=1;strokeColor=#cccccc;fillColor=#fafafa;',
-          vertex: '1', parent: `root_${layer}_1`,
-        });
-        tbl.ele('mxGeometry', {
-          x: String((node.x ?? 0) + NODE_W / 2 - tblW / 2),
-          y: String((node.y ?? 0) - tblH - 12),
-          width: String(tblW), height: String(tblH), as: 'geometry',
-        });
-        const te = rootCell.ele('mxCell', {
-          id: `${nid}_rtable_edge`,
-          style: 'endArrow=none;html=1;dashed=1;strokeColor=#bbbbbb;',
-          edge: '1', parent: `root_${layer}_1`, source: `${nid}_rtable`, target: nid,
-        });
-        te.ele('mxGeometry', { relative: '1', as: 'geometry' });
-      }
+      // NOTE: L3 routing tables and edges handled in the dedicated L3 block above
     }
 
     // ── Edges ─────────────────────────────────────────────────────
@@ -616,18 +857,11 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
       if (layer === 'L2') {
         style = l2EdgeStyle(link, srcPin, tgtPin);
       } else {
-        let arrowStyle = 'endArrow=none;startArrow=none';
-        if (layer === 'L3' && link.l3_routes?.length) {
-          const fwd = link.l3_routes.some(r => r.source === link.source);
-          const bwd = link.l3_routes.some(r => r.source === link.target);
-          if (fwd && bwd) arrowStyle = 'endArrow=open;startArrow=open;endFill=1;startFill=1';
-          else if (fwd)   arrowStyle = 'endArrow=open;endFill=1';
-          else if (bwd)   arrowStyle = 'startArrow=open;startFill=1;endArrow=none';
-        }
-        const strokeColor = layer === 'L1' ? '#505050' : '#6C3483';
+        // L1 styling
         style = [
-          arrowStyle, 'html=1', 'edgeStyle=none', 'rounded=0',
-          'strokeWidth=1.5', `strokeColor=${strokeColor}`,
+          'endArrow=none', 'startArrow=none',
+          'html=1', 'edgeStyle=none', 'rounded=0',
+          'strokeWidth=1.5', 'strokeColor=#505050',
           'labelBackgroundColor=#ffffff', 'fontColor=#333333', 'fontSize=9',
           `exitX=${srcPin.x.toFixed(4)}`, `exitY=${srcPin.y.toFixed(4)}`, 'exitDx=0', 'exitDy=0',
           `entryX=${tgtPin.x.toFixed(4)}`, `entryY=${tgtPin.y.toFixed(4)}`, 'entryDx=0', 'entryDy=0',
@@ -643,11 +877,6 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
       edge.ele('mxGeometry', { relative: '1', as: 'geometry' });
 
       // ── Source port label ──────────────────────────────────────
-      const srcPort = layer === 'L3'
-        ? [link.src_port, link.src_ip].filter(Boolean).join(' / ')
-        : link.src_port;
-
-      // Get member ports for Po labels in L2
       const srcMembers = (layer === 'L2' && /^Po\d/i.test(link.src_port))
         ? getMemberPorts(link, 'src', topology.links)
         : [];
@@ -655,32 +884,56 @@ export function generateDrawioXml(topology: TopologyData & { _layout?: any }): s
         ? getMemberPorts(link, 'dst', topology.links)
         : [];
 
-      const srcRaw = layer === 'L3'
-        ? srcPort
-        : portLabel(srcPort, link.src_stp_role, link.src_stp_state, layer, srcMembers);
+      // ── L3 endpoint label builder (exact v4 format) ────────────────────
+      // Format:
+      //   <font color="#777" style="font-size:8px">Eth1/27</font>          ← port, grey
+      //   <font color="#1565C0" style="font-size:10px"><b>10.x.x.x</b></font> ← link IP, bold blue
+      //   <font color="#999" style="font-size:8px;font-style:italic">RID: x</font> ← optional
+      function buildL3EndpointLabel(port: string, linkIp: string, mgmtIp: string): string {
+        const parts: string[] = [];
+        if (port)
+          parts.push(`<font color="#777" style="font-size:8px">${port}</font>`);
+        if (linkIp)
+          parts.push(`<font color="#1565C0" style="font-size:10px"><b>${linkIp}</b></font>`);
+        // Show RID only when it differs from the link IP (stripped of /mask)
+        const linkIpBase = linkIp?.split('/')[0] ?? '';
+        if (mgmtIp && linkIpBase && mgmtIp !== linkIpBase)
+          parts.push(`<font color="#999" style="font-size:8px;font-style:italic">RID: ${mgmtIp}</font>`);
+        return parts.join('<br/>');
+      }
+
+      const EP_STYLE = 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;labelBackgroundColor=#ffffffee;';
+
+      let srcRaw: string;
+      if (layer === 'L3') {
+        const srcNode = nodeMap.get(link.source);
+        srcRaw = buildL3EndpointLabel(link.src_port, link.src_ip ?? '', srcNode?.ip ?? '');
+      } else {
+        srcRaw = portLabel(link.src_port, link.src_stp_role, link.src_stp_state, layer, srcMembers);
+      }
 
       if (srcRaw) {
         const sl = rootCell.ele('mxCell', {
           id: `${edgeId}_slbl`, value: srcRaw,
-          style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;fontColor=#333;labelBackgroundColor=#ffffffdd;',
+          style: EP_STYLE,
           vertex: '1', connectable: '0', parent: edgeId,
         });
         sl.ele('mxGeometry', { x: '-0.75', relative: '1', as: 'geometry' }).ele('mxPoint', { as: 'offset' });
       }
 
       // ── Target port label ──────────────────────────────────────
-      const dstPort = layer === 'L3'
-        ? [link.dst_port, link.dst_ip].filter(Boolean).join(' / ')
-        : link.dst_port;
-
-      const dstRaw = layer === 'L3'
-        ? dstPort
-        : portLabel(dstPort, link.dst_stp_role, link.dst_stp_state, layer, srcMembers2);
+      let dstRaw: string;
+      if (layer === 'L3') {
+        const dstNode = nodeMap.get(link.target);
+        dstRaw = buildL3EndpointLabel(link.dst_port, link.dst_ip ?? '', dstNode?.ip ?? '');
+      } else {
+        dstRaw = portLabel(link.dst_port, link.dst_stp_role, link.dst_stp_state, layer, srcMembers2);
+      }
 
       if (dstRaw) {
         const dl = rootCell.ele('mxCell', {
           id: `${edgeId}_dlbl`, value: dstRaw,
-          style: 'edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=9;fontColor=#333;labelBackgroundColor=#ffffffdd;',
+          style: EP_STYLE,
           vertex: '1', connectable: '0', parent: edgeId,
         });
         dl.ele('mxGeometry', { x: '0.75', relative: '1', as: 'geometry' }).ele('mxPoint', { as: 'offset' });

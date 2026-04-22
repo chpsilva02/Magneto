@@ -55,11 +55,22 @@ function adaptiveSpacing(totalNodes: number) {
   return                        { xGap: 150, yGap: 220, maxPerRow: 20, marginX: 100, marginY: 80  };
 }
 
+// L3-specific spacing: routing tables render to the RIGHT of each node (320px wide + 30px gap).
+// xGap must be >= 420 to avoid tables overlapping neighbouring nodes.
+function adaptiveSpacingL3(totalNodes: number) {
+  if (totalNodes <= 10)  return { xGap: 500, yGap: 380, maxPerRow:  5, marginX: 200, marginY: 160 };
+  if (totalNodes <= 20)  return { xGap: 480, yGap: 360, maxPerRow:  6, marginX: 180, marginY: 160 };
+  if (totalNodes <= 40)  return { xGap: 460, yGap: 340, maxPerRow:  8, marginX: 160, marginY: 140 };
+  if (totalNodes <= 70)  return { xGap: 440, yGap: 320, maxPerRow:  8, marginX: 140, marginY: 120 };
+  return                        { xGap: 420, yGap: 300, maxPerRow: 10, marginX: 120, marginY: 100 };
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Main layout
 // ─────────────────────────────────────────────────────────────────
-function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResult {
-  const { xGap, yGap, maxPerRow, marginX, marginY } = adaptiveSpacing(nodes.length);
+function computeLayout(nodes: TopologyNode[], links: TopologyLink[], isL3 = false): LayoutResult {
+  const spacing = isL3 ? adaptiveSpacingL3(nodes.length) : adaptiveSpacing(nodes.length);
+  const { xGap, yGap, maxPerRow, marginX, marginY } = spacing;
   const nodeById = new Map(nodes.map(n => [n.id, n]));
 
   // ── Build parent→child tree (cross-tier only) ─────────────────
@@ -215,7 +226,28 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
     }
   }
 
+  // ── Final dedup: guarantee no two nodes share the same (x, y) ─
+  // This catches cases where multiple nodes map to the same tier position
+  // (e.g. VDCs, stacked devices that the parser sees as separate nodes).
+  const finalPositions = new Map<string, string>(); // "x,y" -> nodeId that owns that slot
+  for (const n of nodes) {
+    let x = posX.get(n.id) ?? marginX;
+    let y = posY.get(n.id) ?? marginY;
+    let key = `${Math.round(x)},${Math.round(y)}`;
+    // Shift right until we find an empty slot
+    while (finalPositions.has(key)) {
+      x += xGap;
+      key = `${Math.round(x)},${Math.round(y)}`;
+    }
+    finalPositions.set(key, n.id);
+    posX.set(n.id, x);
+  }
+
   // ── Final nodes ───────────────────────────────────────────────
+  // Isolated nodes (no links on any layer) are NOT rendered —
+  // drawio.ts filters by activeIds per layer, so they're already excluded.
+  // We still assign them a position so the data is consistent.
+
   const out: TopologyNode[] = nodes.map(n => ({
     ...n,
     x: Math.round(posX.get(n.id) ?? marginX),
@@ -224,8 +256,10 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
 
   const maxX = out.length ? Math.max(...out.map(n => n.x!)) : 1800;
   const maxY = out.length ? Math.max(...out.map(n => n.y!)) : 1200;
-  const pageW = Math.max(1800, maxX + NODE_W + marginX + 200);
-  const pageH = maxY + NODE_H + 400;
+  // Extra width for routing tables rendered to the right of nodes (up to 380px each)
+  const pageW = Math.max(1800, maxX + NODE_W + marginX + 500);
+  // Extra height for edge IP labels
+  const pageH = maxY + NODE_H + 600;
 
   return { nodes: out, pageW, pageH, tierY0: marginY, tierYGap: yGap };
 }
@@ -235,7 +269,11 @@ function computeLayout(nodes: TopologyNode[], links: TopologyLink[]): LayoutResu
 // ─────────────────────────────────────────────────────────────────
 export function applyLayout(topology: TopologyData): TopologyData & { _layout?: LayoutResult } {
   if (topology.nodes.every(n => n.x !== undefined && n.y !== undefined)) return topology;
-  const result = computeLayout(topology.nodes, topology.links);
+  // Detect if this is primarily an L3 topology (routing tables need extra horizontal space)
+  const l3Links = topology.links.filter(l => l.layer === 'L3').length;
+  const l1Links = topology.links.filter(l => l.layer === 'L1').length;
+  const isL3 = l3Links > l1Links || l1Links === 0;
+  const result = computeLayout(topology.nodes, topology.links, isL3);
   return { nodes: result.nodes, links: topology.links, _layout: result };
 }
 

@@ -1,10 +1,10 @@
-import { TopologyData, TopologyNode, TopologyLink } from '../../shared/types.ts';
+import { TopologyData, TopologyNode, TopologyLink, RouteEntry } from '../../shared/types.ts';
 import { TopologyDatabase } from './topologyDb.ts';
 import { parseStpBlock } from './parsers/stp.parser.ts';
 import { parsePortChannelSummary, parseChannelGroupConfig, mergePortChannels } from './parsers/portchannel.parser.ts';
 import { buildL2TopologyView } from './builders/l2-topology.builder.ts';
 import { StpPortRecord, StpRootRecord, PortChannelRecord } from './l2/index.ts';
-import { extractDeviceInfo } from './parsers/device-info.parser.ts';
+import { extractDeviceInfo, parseInterfaceIps } from './parsers/device-info.parser.ts';
 
 function normalizePort(port: string): string {
   if (!port) return '';
@@ -128,6 +128,9 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
   
   // L3 Extraction Arrays
   const ipToDevice: Record<string, string> = {};
+  // Per-device interface→IP map: interfaceIps[hostname][normalizedPort] = "ip/mask"
+  // Used to label L3 edge endpoints with the actual link IP (not just mgmt IP)
+  const interfaceIps: Record<string, Record<string, string>> = {};
   const extractedOspf: Array<{ sourceDevice: string, neighborIp: string, localPort: string, state: string }> = [];
   const extractedBgp: Array<{ sourceDevice: string, neighborIp: string, as: string, state: string }> = [];
   const extractedRoutes: Array<{ sourceDevice: string, code: string, prefix: string, nextHop: string, localPort: string }> = [];
@@ -144,6 +147,48 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
 
     // Register management IP so L3 builder can resolve it to a device
     if (mgmtIp) ipToDevice[mgmtIp] = hostname;
+
+    // ── Extract ALL interface IPs (not just management) ──────────────────
+    // Builds interfaceIps[hostname][port] = "ip" so L3 edges can show
+    // the real link IP (e.g. 10.10.1.1/30) instead of the management IP.
+    const allIfaceIps = parseInterfaceIps(blockData);
+    if (!interfaceIps[hostname]) interfaceIps[hostname] = {};
+    for (const rec of allIfaceIps) {
+      const portNorm = normalizePort(rec.name);
+      if (portNorm && rec.ip) {
+        interfaceIps[hostname][portNorm] = rec.ip;
+        // Also register all interface IPs in ipToDevice for neighbor resolution
+        ipToDevice[rec.ip] = hostname;
+      }
+    }
+    // Also extract mask from config blocks for /prefix notation
+    // Pattern: "ip address X.X.X.X 255.255.255.252" or "ip address X.X.X.X/30"
+    const maskMap: Record<string, string> = {};
+    const maskBlocks = blockData.split(/(?=^interface\s)/im);
+    for (const ib of maskBlocks) {
+      const nm = ib.match(/^interface\s+(\S[^\r\n]+)/im);
+      if (!nm) continue;
+      const portName = normalizePort(nm[1].trim());
+      // CIDR notation
+      const cidrM = ib.match(/ip(?:v4)?\s+address\s+[0-9.]+\/(\d+)/im);
+      if (cidrM) { maskMap[portName] = `/${cidrM[1]}`; continue; }
+      // Dotted mask → prefix length
+      const dotM = ib.match(/ip\s+address\s+[0-9.]+\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/im);
+      if (dotM) {
+        const mask = dotM[1].split('.').reduce((acc, o) => {
+          const n = parseInt(o); let bits = 0;
+          for (let i = 7; i >= 0; i--) { if (n & (1 << i)) bits++; else break; }
+          return acc + bits;
+        }, 0);
+        maskMap[portName] = `/${mask}`;
+      }
+    }
+    // Merge masks into interfaceIps
+    for (const [port, mask] of Object.entries(maskMap)) {
+      if (interfaceIps[hostname]?.[port]) {
+        interfaceIps[hostname][port] = interfaceIps[hostname][port] + mask;
+      }
+    }
 
     db.upsertDevice({
       id: hostname,
@@ -667,40 +712,50 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
     }
   }
 
-  // --- BUILD L3 TOPOLOGY ---
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BUILD L3 TOPOLOGY
+  //
+  // Rules (matching user requirements):
+  //  1. L3 shows ONLY devices that are already in L1/L2 (same device set).
+  //  2. L3 edges are drawn ONLY between two devices that are both already
+  //     known (in nodesMap / ipToDevice). If a BGP/OSPF/Static peer IP cannot
+  //     be resolved to a known device → NO node, NO edge is created for it.
+  //     The peer info is stored as an annotation on the local device's
+  //     routing table instead.
+  //  3. BGP: peer IP shown on each edge endpoint when both sides are known.
+  //  4. Static routes whose next-hop is NOT a known device → shown ONLY in
+  //     the routing table of the source device (no edge, no phantom node).
+  //  5. Routing table: every device with extracted routes gets a table.
+  //     Default route (0.0.0.0/0) always shown first.
+  //  6. NEVER create "External Peer" nodes.
+  // ═══════════════════════════════════════════════════════════════════════════
+
   const l3LinksMap: Record<string, TopologyLink> = {};
 
-  function getL3Link(source: string, targetIp: string): TopologyLink | null {
-    const targetDevice = ipToDevice[targetIp] || targetIp;
-    if (source === targetDevice) return null; // Ignore self links
+  // bgpPeerAnnotations: device → list of unresolved peer descriptions
+  // These get appended to the device's routing table display.
+  const bgpPeerAnnotations: Record<string, string[]> = {};
 
-    if (!nodesMap[source]) {
-      nodesMap[source] = {
-        id: source,
-        hostname: source,
-        ip: '',
-        vendor: 'unknown',
-        hardware_model: 'Unknown',
-        role: 'unknown'
-      };
-    }
+  // ── Helper: resolve peer IP to a KNOWN device only ────────────
+  // Returns the hostname string if resolved, null otherwise.
+  // Never creates new nodes.
+  function resolveKnownPeer(peerIp: string): string | null {
+    // Direct hostname match (already in nodesMap as a real device)
+    if (nodesMap[peerIp]) return peerIp;
+    // IP → device lookup (populated from interface configs)
+    const resolved = ipToDevice[peerIp];
+    if (resolved && nodesMap[resolved]) return resolved;
+    return null; // unknown → skip edge, annotate routing table instead
+  }
 
-    if (!nodesMap[targetDevice]) {
-      nodesMap[targetDevice] = {
-        id: targetDevice,
-        hostname: targetDevice,
-        ip: targetIp,
-        vendor: 'unknown',
-        hardware_model: 'Unknown',
-        role: 'router'
-      };
-    }
-
-    const devices = [source, targetDevice].sort();
-    const linkKey = `L3_${devices[0]}_${devices[1]}`;
-
-    if (!l3LinksMap[linkKey]) {
-      l3LinksMap[linkKey] = {
+  function getOrCreateL3Link(
+    sourceDevice: string,
+    targetDevice: string,
+  ): TopologyLink {
+    const devices = [sourceDevice, targetDevice].sort();
+    const key = `L3_${devices[0]}_${devices[1]}`;
+    if (!l3LinksMap[key]) {
+      l3LinksMap[key] = {
         id: `l3_${linkIdCounter++}`,
         source: devices[0],
         target: devices[1],
@@ -708,51 +763,94 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         dst_port: '',
         layer: 'L3',
         protocol: 'connected',
-        l3_routes: []
+        l3_routes: [],
       };
     }
-    
-    const link = l3LinksMap[linkKey];
-    if (devices[0] === targetDevice && !link.src_ip) {
-      link.src_ip = targetIp;
-    } else if (devices[1] === targetDevice && !link.dst_ip) {
-      link.dst_ip = targetIp;
-    }
-    
-    return link;
+    return l3LinksMap[key];
   }
 
+  // ── Helper: get interface IP for a device+port, fallback to mgmt IP ──
+  function getLinkIp(hostname: string, port: string): string {
+    const portNorm = normalizePort(port);
+    // Try exact port match first
+    const ifaceIp = interfaceIps[hostname]?.[portNorm];
+    if (ifaceIp) return ifaceIp;
+    // Try without subinterface suffix (e.g. "Eth1/1" from "Eth1/1.100")
+    const basePort = portNorm.replace(/\.\d+$/, '');
+    const baseIp = interfaceIps[hostname]?.[basePort];
+    if (baseIp) return baseIp;
+    // Fallback: management IP (router-id)
+    return nodesMap[hostname]?.ip || '';
+  }
+
+  // ── OSPF neighbors ─────────────────────────────────────────────
   for (const ospf of extractedOspf) {
-    const link = getL3Link(ospf.sourceDevice, ospf.neighborIp);
-    if (link) {
-      link.protocol = 'ospf';
-      if (link.source === ospf.sourceDevice) link.src_port = ospf.localPort;
-      else link.dst_port = ospf.localPort;
-      link.state = ospf.state;
+    if (!nodesMap[ospf.sourceDevice]) continue;
+    const target = resolveKnownPeer(ospf.neighborIp);
+    if (!target) {
+      if (!bgpPeerAnnotations[ospf.sourceDevice]) bgpPeerAnnotations[ospf.sourceDevice] = [];
+      bgpPeerAnnotations[ospf.sourceDevice].push(`OSPF neighbor: ${ospf.neighborIp} (${ospf.state})`);
+      continue;
+    }
+    const link = getOrCreateL3Link(ospf.sourceDevice, target);
+    link.protocol = 'ospf';
+    link.state    = ospf.state;
+    // Use per-interface IP (the real link IP) — not the management IP
+    const srcLinkIp = getLinkIp(ospf.sourceDevice, ospf.localPort);
+    if (link.source === ospf.sourceDevice) {
+      if (!link.src_port) link.src_port = ospf.localPort;
+      if (!link.src_ip)   link.src_ip   = srcLinkIp;
+      if (!link.dst_ip)   link.dst_ip   = ospf.neighborIp;
+    } else {
+      if (!link.dst_port) link.dst_port = ospf.localPort;
+      if (!link.dst_ip)   link.dst_ip   = srcLinkIp;
+      if (!link.src_ip)   link.src_ip   = ospf.neighborIp;
     }
   }
 
+  // ── BGP neighbors ──────────────────────────────────────────────
   for (const bgp of extractedBgp) {
-    const link = getL3Link(bgp.sourceDevice, bgp.neighborIp);
-    if (link) {
-      link.protocol = 'bgp';
-      link.routing_as = `AS ${bgp.as}`;
-      link.state = bgp.state;
+    if (!nodesMap[bgp.sourceDevice]) continue;
+    const target = resolveKnownPeer(bgp.neighborIp);
+    if (!target) {
+      if (!bgpPeerAnnotations[bgp.sourceDevice]) bgpPeerAnnotations[bgp.sourceDevice] = [];
+      bgpPeerAnnotations[bgp.sourceDevice].push(
+        `BGP peer: ${bgp.neighborIp}  AS ${bgp.as}  ${bgp.state}`
+      );
+      continue;
+    }
+    const link = getOrCreateL3Link(bgp.sourceDevice, target);
+    link.protocol   = 'bgp';
+    link.routing_as = `AS ${bgp.as}`;
+    link.state      = bgp.state;
+    // src_ip = the interface IP on the source device for this BGP session
+    // dst_ip = the peer IP (neighbor IP — the actual BGP peer address)
+    // These are the two endpoints of the BGP session, one on each side
+    if (link.source === bgp.sourceDevice) {
+      if (!link.src_ip) link.src_ip = getLinkIp(bgp.sourceDevice, '');
+      if (!link.dst_ip) link.dst_ip = bgp.neighborIp;
+    } else {
+      if (!link.dst_ip) link.dst_ip = getLinkIp(bgp.sourceDevice, '');
+      if (!link.src_ip) link.src_ip = bgp.neighborIp;
     }
   }
 
+  // ── Static / learned routes ────────────────────────────────────
   for (const route of extractedRoutes) {
-    let proto = 'unknown';
+    if (!nodesMap[route.sourceDevice]) continue;
     const code = route.code.replace('*', '').trim();
-    if (code.startsWith('O')) proto = 'ospf';
+    let proto: string;
+    if      (code.startsWith('O')) proto = 'ospf';
     else if (code.startsWith('B')) proto = 'bgp';
     else if (code.startsWith('D')) proto = 'eigrp';
     else if (code.startsWith('S')) proto = 'static';
     else if (code.startsWith('i')) proto = 'isis';
     else continue;
 
-    const link = getL3Link(route.sourceDevice, route.nextHop);
-    if (link) {
+    // Only create an L3 edge if the next-hop resolves to a known device
+    const target = resolveKnownPeer(route.nextHop);
+    if (target) {
+      const link = getOrCreateL3Link(route.sourceDevice, target);
       if (link.protocol === 'connected' || link.protocol === 'unknown') {
         link.protocol = proto as any;
       }
@@ -760,34 +858,80 @@ export function parseRawData(rawData: string, vendor: string): TopologyData {
         if (link.source === route.sourceDevice && !link.src_port) link.src_port = route.localPort;
         if (link.target === route.sourceDevice && !link.dst_port) link.dst_port = route.localPort;
       }
-
+      if (link.source === route.sourceDevice) {
+        if (!link.dst_ip) link.dst_ip = route.nextHop;
+      } else {
+        if (!link.src_ip) link.src_ip = route.nextHop;
+      }
       if (route.prefix && route.prefix !== '0.0.0.0/0') {
         if (!link.l3_routes) link.l3_routes = [];
-        const exists = link.l3_routes.find(r => r.source === route.sourceDevice && r.prefix === route.prefix && r.protocol === proto);
+        const exists = link.l3_routes.find(
+          r => r.source === route.sourceDevice && r.prefix === route.prefix,
+        );
         if (!exists) {
           link.l3_routes.push({
             source: route.sourceDevice,
             target: link.source === route.sourceDevice ? link.target : link.source,
             protocol: proto,
-            prefix: route.prefix
+            prefix: route.prefix,
           });
         }
       }
     }
+    // If next-hop is unresolved: nothing extra needed — route will appear in rtable below
   }
 
+  // ── Attach only resolved L3 links ─────────────────────────────
   for (const link of Object.values(l3LinksMap)) {
-    if (!nodesMap[link.target]) {
-      nodesMap[link.target] = {
-        id: link.target,
-        hostname: link.target,
-        ip: link.dst_ip || '',
-        vendor: 'unknown',
-        hardware_model: 'Unknown L3 Node',
-        role: 'router'
-      };
-    }
+    // Both endpoints MUST already be in nodesMap (real known devices)
+    if (!nodesMap[link.source] || !nodesMap[link.target]) continue;
     linksMap[link.id] = link;
+  }
+
+  // ── Build routing table for each device ───────────────────────
+  // Group all extracted routes by device, deduplicate, sort default first.
+  const routesByDevice: Record<string, typeof extractedRoutes> = {};
+  for (const r of extractedRoutes) {
+    if (!routesByDevice[r.sourceDevice]) routesByDevice[r.sourceDevice] = [];
+    routesByDevice[r.sourceDevice].push(r);
+  }
+
+  for (const [device, routes] of Object.entries(routesByDevice)) {
+    if (!nodesMap[device]) continue;
+    const seen = new Set<string>();
+    const deduped: RouteEntry[] = [];
+    for (const r of routes) {
+      const key = `${r.prefix}|${r.nextHop}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push({
+        destination: r.prefix,
+        nextHop: r.nextHop,
+        interface: r.localPort,
+        protocol: r.code,
+      });
+    }
+    // Default route first
+    deduped.sort((a, b) =>
+      a.destination === '0.0.0.0/0' ? -1 : b.destination === '0.0.0.0/0' ? 1 : 0,
+    );
+    nodesMap[device].routes = deduped.slice(0, 12);
+  }
+
+  // ── Store BGP/OSPF peer annotations on devices ────────────────
+  // Unresolved peers appear as extra rows in the routing table
+  for (const [device, annotations] of Object.entries(bgpPeerAnnotations)) {
+    if (!nodesMap[device]) continue;
+    if (!nodesMap[device].routes) nodesMap[device].routes = [];
+    for (const ann of annotations) {
+      // Encode annotation as a special route entry (destination = annotation text)
+      nodesMap[device].routes!.push({
+        destination: ann,
+        nextHop: '',
+        interface: '',
+        protocol: 'peer',
+      });
+    }
   }
 
   let nodes = Object.values(nodesMap);

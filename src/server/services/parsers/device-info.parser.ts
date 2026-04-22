@@ -99,7 +99,7 @@ function ifacePriority(name: string, description: string): number {
   return 8;
 }
 
-interface IfaceRecord {
+export interface IfaceRecord {
   name: string; ip: string; description: string; priority: number;
 }
 
@@ -107,7 +107,7 @@ interface IfaceRecord {
 // IP Extraction — covers all vendor formats
 // ─────────────────────────────────────────────────────────────────────────────
 
-function parseInterfaceIps(block: string): IfaceRecord[] {
+export function parseInterfaceIps(block: string): IfaceRecord[] {
   const records: IfaceRecord[] = [];
   const seenIps = new Set<string>();
 
