@@ -16,7 +16,7 @@ function cn(...classes: (string | boolean | undefined | null)[]): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
-type Tab    = 'discovery' | 'upload' | 'risk' | 'assessment';
+type Tab    = 'discovery' | 'upload' | 'risk' | 'assessment' | 'dashboard';
 type Theme  = 'light' | 'dark';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -681,6 +681,357 @@ function RiskAssessmentPanel({
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EXECUTIVE DASHBOARD — visão completa Matriz + Assessment
+// ─────────────────────────────────────────────────────────────────────────────
+function ExecutiveDashboard({
+  devices,
+  onClear,
+  onGoToMatriz,
+  onGoToAssessment,
+  onBack,
+}: {
+  devices: DeviceResult[];
+  onClear: () => void;
+  onGoToMatriz: (idx: number) => void;
+  onGoToAssessment: () => void;
+  onBack: () => void;
+}) {
+  const VENDOR_LABEL: Record<string, string> = {
+    cisco_ios: 'Cisco IOS', cisco_nxos: 'Cisco NX-OS', dell_os10: 'Dell OS10',
+    hpe_comware: 'HP Comware', huawei_vrp: 'Huawei VRP',
+  };
+
+  if (!devices.length) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
+        <Monitor className="w-16 h-16 text-slate-700" />
+        <p className="text-slate-400 font-semibold text-lg">Nenhum dado disponível</p>
+        <p className="text-slate-600 text-sm max-w-sm">
+          Carregue logs nas abas <span className="text-purple-400 font-semibold">Matriz de Riscos</span> ou{' '}
+          <span className="text-cyan-400 font-semibold">Assessment Network</span> para ver o dashboard.
+        </p>
+        <button onClick={onBack}
+          className="mt-2 flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl border border-slate-700 transition-all">
+          ← Voltar para tela inicial
+        </button>
+      </div>
+    );
+  }
+
+  // ── Compute all aggregates ────────────────────────────────────────────────
+  const rows = devices.map(d => {
+    const it      = d.items.filter(i => i.status !== 'SECTION');
+    const sim     = it.filter(i => i.status === 'SIM').length;
+    const nao     = it.filter(i => i.status === 'NÃO').length;
+    const parcial = it.filter(i => i.status === 'PARCIAL').length;
+    const altos   = it.filter(i => (i.risco ?? '').includes('✕')).length;
+    const medios  = it.filter(i => (i.risco ?? '').includes('⚠')).length;
+    const tot     = it.length;
+    const pct     = tot > 0 ? Math.round(sim / tot * 100) : 0;
+    return { ...d, sim, nao, parcial, altos, medios, tot, pct, it };
+  });
+
+  const gt = rows.reduce((a, r) => ({
+    tot: a.tot+r.tot, sim: a.sim+r.sim, nao: a.nao+r.nao,
+    par: a.par+r.parcial, alt: a.alt+r.altos, med: a.med+r.medios,
+  }), { tot:0, sim:0, nao:0, par:0, alt:0, med:0 });
+  const gPct = gt.tot > 0 ? Math.round(gt.sim / gt.tot * 100) : 0;
+
+  // Vendor breakdown
+  const vendorCount: Record<string, number> = {};
+  rows.forEach(r => { vendorCount[r.vendor] = (vendorCount[r.vendor]||0) + 1; });
+
+  // Top offenders (worst pct first)
+  const topOffenders = [...rows].sort((a,b) => a.pct - b.pct).slice(0, 5);
+  // Top compliant
+  const topCompliant = [...rows].sort((a,b) => b.pct - a.pct).slice(0, 5);
+  // Devices with high risk
+  const highRisk = rows.filter(r => r.altos > 0).sort((a,b) => b.altos - a.altos);
+
+  // Section breakdown across all devices
+  const sectionStats: Record<string, { sim:number; nao:number; par:number; tot:number }> = {};
+  for (const d of devices) {
+    let cur = '';
+    for (const item of d.items) {
+      if (item.status === 'SECTION') { cur = item.item; continue; }
+      if (!cur) continue;
+      if (!sectionStats[cur]) sectionStats[cur] = { sim:0, nao:0, par:0, tot:0 };
+      sectionStats[cur].tot++;
+      if (item.status === 'SIM')     sectionStats[cur].sim++;
+      if (item.status === 'NÃO')    sectionStats[cur].nao++;
+      if (item.status === 'PARCIAL') sectionStats[cur].par++;
+    }
+  }
+  const sectionList = Object.entries(sectionStats)
+    .map(([label, s]) => ({ label, ...s, pct: s.tot>0?Math.round(s.sim/s.tot*100):0 }))
+    .sort((a,b) => a.pct - b.pct);
+
+  const healthColor = gPct >= 80 ? 'text-emerald-400' : gPct >= 50 ? 'text-amber-400' : 'text-red-400';
+  const healthBg    = gPct >= 80 ? 'from-emerald-900/40 to-emerald-900/10 border-emerald-700/50'
+                    : gPct >= 50 ? 'from-amber-900/40 to-amber-900/10 border-amber-700/50'
+                                 : 'from-red-900/40 to-red-900/10 border-red-700/50';
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+
+      {/* ── Header ─────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-all">
+            ← Voltar
+          </button>
+          <div>
+            <h2 className="text-xs font-bold uppercase tracking-widest text-cyan-400 flex items-center gap-2">
+              <Monitor className="w-4 h-4" /> Dashboard Executivo
+            </h2>
+            <p className="text-slate-500 text-xs mt-0.5">
+              {devices.length} dispositivos · {new Date().toLocaleDateString('pt-BR', { day:'2-digit', month:'long', year:'numeric' })}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={onGoToAssessment}
+            className="text-xs text-purple-400 bg-purple-900/20 hover:bg-purple-900/40 px-3 py-1.5 rounded-lg border border-purple-800/50 flex items-center gap-1.5 transition-all">
+            <Activity className="w-3.5 h-3.5" /> Ver Assessment
+          </button>
+          <button onClick={onClear}
+            className="text-xs text-red-400 bg-red-900/20 hover:bg-red-900/40 px-3 py-1.5 rounded-lg border border-red-800/50 flex items-center gap-1.5 transition-all">
+            <XCircle className="w-3.5 h-3.5" /> Limpar
+          </button>
+        </div>
+      </div>
+
+      {/* ── Row 1: KPI macro ───────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        {/* Health score — featured */}
+        <div className={cn('lg:col-span-2 rounded-2xl border bg-gradient-to-br p-5 flex flex-col items-center justify-center text-center gap-1', healthBg)}>
+          <p className={cn('text-6xl font-black leading-none', healthColor)}>{gPct}%</p>
+          <p className="text-sm font-bold text-slate-300 mt-1">Saúde Geral da Rede</p>
+          <p className="text-xs text-slate-500">{gt.sim} de {gt.tot} itens conformes</p>
+          <div className="w-full mt-3 h-2 bg-slate-700/50 rounded-full overflow-hidden">
+            <div className={cn('h-full rounded-full transition-all', gPct>=80?'bg-emerald-500':gPct>=50?'bg-amber-500':'bg-red-500')}
+              style={{ width: `${gPct}%` }} />
+          </div>
+        </div>
+
+        {/* KPI cards */}
+        {[
+          { label:'Dispositivos', value: devices.length, sub:'analisados',   c:'text-purple-400',  bg:'bg-purple-900/20',  b:'border-purple-800/50' },
+          { label:'Conformes',    value: gt.sim,         sub:'SIM',          c:'text-emerald-400', bg:'bg-emerald-900/20', b:'border-emerald-800/50' },
+          { label:'Não Conf.',    value: gt.nao,         sub:'NÃO',          c:'text-red-400',     bg:'bg-red-900/20',     b:'border-red-800/50' },
+          { label:'Parciais',     value: gt.par,         sub:'PARCIAL',      c:'text-amber-400',   bg:'bg-amber-900/20',   b:'border-amber-800/50' },
+          { label:'Risco Alto',   value: gt.alt,         sub:'itens críticos',c:'text-red-400',    bg:'bg-red-900/20',     b:'border-red-800/50' },
+        ].map(s => (
+          <div key={s.label} className={cn('rounded-2xl border p-4 flex flex-col items-center justify-center text-center gap-0.5', s.bg, s.b)}>
+            <p className={cn('text-4xl font-black leading-none', s.c)}>{s.value}</p>
+            <p className="text-xs font-bold text-slate-300 mt-1">{s.label}</p>
+            <p className="text-xs text-slate-600">{s.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Row 2: Network health bar + Vendor breakdown ──────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        {/* Network health stacked bar */}
+        <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-800/40 p-5 space-y-4">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+            <Globe className="w-3.5 h-3.5" /> Distribuição de Conformidade
+          </h3>
+          <div className="flex h-6 rounded-xl overflow-hidden gap-0.5">
+            {gt.tot > 0 && <>
+              <div className="bg-emerald-500 h-full transition-all flex items-center justify-center" style={{ width:`${Math.round(gt.sim/gt.tot*100)}%` }}>
+                {Math.round(gt.sim/gt.tot*100) > 8 && <span className="text-xs font-bold text-white">{Math.round(gt.sim/gt.tot*100)}%</span>}
+              </div>
+              <div className="bg-amber-500 h-full transition-all flex items-center justify-center" style={{ width:`${Math.round(gt.par/gt.tot*100)}%` }}>
+                {Math.round(gt.par/gt.tot*100) > 6 && <span className="text-xs font-bold text-white">{Math.round(gt.par/gt.tot*100)}%</span>}
+              </div>
+              <div className="bg-red-500 h-full transition-all flex items-center justify-center" style={{ width:`${Math.round(gt.nao/gt.tot*100)}%` }}>
+                {Math.round(gt.nao/gt.tot*100) > 6 && <span className="text-xs font-bold text-white">{Math.round(gt.nao/gt.tot*100)}%</span>}
+              </div>
+            </>}
+          </div>
+          <div className="flex gap-5 text-xs">
+            <span className="flex items-center gap-1.5 text-emerald-400"><span className="w-3 h-3 rounded bg-emerald-500 inline-block" /> SIM — {gt.sim}</span>
+            <span className="flex items-center gap-1.5 text-amber-400"><span className="w-3 h-3 rounded bg-amber-500 inline-block" /> PARCIAL — {gt.par}</span>
+            <span className="flex items-center gap-1.5 text-red-400"><span className="w-3 h-3 rounded bg-red-500 inline-block" /> NÃO — {gt.nao}</span>
+          </div>
+
+          {/* Per-section breakdown */}
+          <div className="space-y-2 pt-2 border-t border-slate-700/50">
+            <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide">Por Categoria de Segurança</p>
+            {sectionList.slice(0, 8).map(s => (
+              <div key={s.label} className="flex items-center gap-3">
+                <span className="text-xs text-slate-500 truncate w-44 flex-shrink-0" title={s.label}>{s.label}</span>
+                <div className="flex-1 h-1.5 bg-slate-700/50 rounded-full overflow-hidden">
+                  <div className={cn('h-full rounded-full', s.pct>=80?'bg-emerald-500':s.pct>=50?'bg-amber-500':'bg-red-500')}
+                    style={{ width:`${s.pct}%` }} />
+                </div>
+                <span className={cn('text-xs font-bold w-10 text-right flex-shrink-0', s.pct>=80?'text-emerald-400':s.pct>=50?'text-amber-400':'text-red-400')}>{s.pct}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Vendor breakdown */}
+        <div className="rounded-2xl border border-slate-800 bg-slate-800/40 p-5 space-y-4">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+            <Server className="w-3.5 h-3.5" /> Fabricantes
+          </h3>
+          <div className="space-y-3">
+            {Object.entries(vendorCount).sort((a,b)=>b[1]-a[1]).map(([vendor, count]) => {
+              const vRows = rows.filter(r => r.vendor === vendor);
+              const vPct  = vRows.length > 0 ? Math.round(vRows.reduce((a,r)=>a+r.pct,0)/vRows.length) : 0;
+              return (
+                <div key={vendor} className="space-y-1">
+                  <div className="flex justify-between items-center">
+                    <VendorPill vendor={vendor} />
+                    <span className="text-xs text-slate-400 font-semibold">{count} device{count>1?'s':''}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-slate-700/50 rounded-full overflow-hidden">
+                      <div className={cn('h-full rounded-full', vPct>=80?'bg-emerald-500':vPct>=50?'bg-amber-500':'bg-red-500')}
+                        style={{ width:`${vPct}%` }} />
+                    </div>
+                    <span className={cn('text-xs font-bold w-8 text-right', vPct>=80?'text-emerald-400':vPct>=50?'text-amber-400':'text-red-400')}>{vPct}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Row 3: Top Offenders + Top Compliant + High Risk ─────── */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+        {/* Top offenders */}
+        <div className="rounded-2xl border border-red-900/40 bg-red-900/10 p-5 space-y-3">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-red-400 flex items-center gap-2">
+            <AlertCircle className="w-3.5 h-3.5" /> Piores Conformidades
+          </h3>
+          <div className="space-y-2">
+            {topOffenders.map((r, i) => (
+              <button key={i} onClick={() => onGoToMatriz(rows.indexOf(r))}
+                className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl bg-red-900/20 hover:bg-red-900/40 border border-red-900/30 hover:border-red-700/50 transition-all group text-left">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-slate-200 font-mono truncate">{r.hostname}</p>
+                  <VendorPill vendor={r.vendor} />
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className={cn('text-sm font-black', r.pct>=50?'text-amber-400':'text-red-400')}>{r.pct}%</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-400 -rotate-90" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Top compliant */}
+        <div className="rounded-2xl border border-emerald-900/40 bg-emerald-900/10 p-5 space-y-3">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
+            <CheckCircle2 className="w-3.5 h-3.5" /> Melhores Conformidades
+          </h3>
+          <div className="space-y-2">
+            {topCompliant.map((r, i) => (
+              <button key={i} onClick={() => onGoToMatriz(rows.indexOf(r))}
+                className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-900/20 hover:bg-emerald-900/40 border border-emerald-900/30 hover:border-emerald-700/50 transition-all group text-left">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-slate-200 font-mono truncate">{r.hostname}</p>
+                  <VendorPill vendor={r.vendor} />
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-sm font-black text-emerald-400">{r.pct}%</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-400 -rotate-90" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* High risk devices */}
+        <div className="rounded-2xl border border-orange-900/40 bg-orange-900/10 p-5 space-y-3">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-orange-400 flex items-center gap-2">
+            <Shield className="w-3.5 h-3.5" /> Riscos Críticos (✕ ALTO)
+          </h3>
+          {highRisk.length === 0 ? (
+            <div className="flex flex-col items-center py-6 text-center gap-2">
+              <CheckCircle2 className="w-8 h-8 text-emerald-500/50" />
+              <p className="text-xs text-emerald-500/80 font-semibold">Nenhum risco alto detectado</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {highRisk.slice(0, 5).map((r, i) => (
+                <button key={i} onClick={() => onGoToMatriz(rows.indexOf(r))}
+                  className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl bg-orange-900/20 hover:bg-orange-900/40 border border-orange-900/30 hover:border-orange-700/50 transition-all group text-left">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-slate-200 font-mono truncate">{r.hostname}</p>
+                    <VendorPill vendor={r.vendor} />
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-sm font-black text-red-400">{r.altos} ✕</span>
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-400 -rotate-90" />
+                  </div>
+                </button>
+              ))}
+              {highRisk.length > 5 && (
+                <p className="text-xs text-slate-600 text-center">+ {highRisk.length-5} outros dispositivos</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Row 4: Full device table ───────────────────────────────── */}
+      <div className="rounded-2xl border border-slate-800 overflow-hidden">
+        <div className="bg-slate-800/80 px-5 py-3 flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+            <Layers className="w-3.5 h-3.5" /> Todos os Dispositivos — {rows.length} total
+          </h3>
+        </div>
+
+        {/* Table header */}
+        <div className="grid grid-cols-[2fr_1fr_1.2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.7fr_0.8fr_0.5fr] gap-0 px-5 py-2.5 bg-slate-800/60 text-xs font-bold uppercase tracking-wide text-slate-600">
+          {['DISPOSITIVO','IP','VENDOR','TOTAL','SIM','NÃO','PARCIAL','ALTO ✕','CONFORM.','VER'].map((h,i) => (
+            <span key={h} className={i >= 3 ? 'text-center' : ''}>{h}</span>
+          ))}
+        </div>
+
+        <div className="divide-y divide-slate-800/50 max-h-[480px] overflow-y-auto">
+          {rows.map((row, i) => (
+            <div key={i} className={cn(
+              'grid grid-cols-[2fr_1fr_1.2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.7fr_0.8fr_0.5fr] gap-0 px-5 py-2.5 items-center transition-colors hover:bg-slate-800/40',
+              i % 2 === 0 ? 'bg-slate-900/60' : 'bg-slate-900/30'
+            )}>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-200 font-mono truncate">{row.hostname||'—'}</p>
+                {row.model && <p className="text-xs text-slate-600 truncate mt-0.5">{row.model}</p>}
+              </div>
+              <span className="text-xs text-slate-600 font-mono truncate">{row.ip||'—'}</span>
+              <div><VendorPill vendor={row.vendor} /></div>
+              <span className="text-xs text-slate-400 text-center font-semibold">{row.tot}</span>
+              <span className="text-xs text-emerald-400 text-center font-bold">{row.sim}</span>
+              <span className="text-xs text-red-400 text-center font-bold">{row.nao}</span>
+              <span className="text-xs text-amber-400 text-center font-bold">{row.parcial}</span>
+              <span className={cn('text-xs text-center font-bold', row.altos>0?'text-red-400':'text-slate-600')}>{row.altos}</span>
+              <div className="text-center"><ConformBadge pct={row.pct} /></div>
+              <div className="text-center">
+                <button onClick={() => onGoToMatriz(i)}
+                  className="text-xs text-purple-400 hover:text-purple-200 bg-purple-900/20 hover:bg-purple-900/50 px-2 py-0.5 rounded-lg border border-purple-800/50 transition-all font-semibold">
+                  Ver
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -853,6 +1204,25 @@ export default function App() {
             </span>
           </div>
 
+          {/* Dashboard button — next to logo, as shown in the image */}
+          <button
+            onClick={() => setActiveTab(activeTab === 'dashboard' ? 'discovery' : 'dashboard')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all border',
+              activeTab === 'dashboard'
+                ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            )}
+          >
+            <Monitor className="w-4 h-4" />
+            Dashboard
+            {riskDevices.length > 0 && (
+              <span className="bg-purple-700 text-purple-200 text-xs px-1.5 py-0.5 rounded-full font-bold leading-none">
+                {riskDevices.length}
+              </span>
+            )}
+          </button>
+
           <div className="flex-1" />
 
           {/* Theme toggle */}
@@ -869,8 +1239,19 @@ export default function App() {
       {/* ── MAIN ──────────────────────────────────────────────────── */}
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
 
-        {/* ── CARD ───────────────────────────────────────────────── */}
-        <div className="bg-[#161b22] rounded-2xl border border-slate-800 overflow-hidden">
+        {/* ── DASHBOARD — full page, outside card ────────────────── */}
+        {activeTab === 'dashboard' && (
+          <ExecutiveDashboard
+            devices={riskDevices}
+            onClear={() => { setRiskDevices([]); setRiskView('upload'); setAssessView('upload'); }}
+            onGoToMatriz={(i) => { setRiskActiveDevice(i); setRiskView('detail'); setActiveTab('risk'); }}
+            onGoToAssessment={() => { setAssessView('assessment'); setActiveTab('assessment'); }}
+            onBack={() => setActiveTab('discovery')}
+          />
+        )}
+
+        {/* ── CARD — hidden when dashboard is active ─────────────── */}
+        <div className={cn('bg-[#161b22] rounded-2xl border border-slate-800 overflow-hidden', activeTab === 'dashboard' && 'hidden')}>
 
           {/* TABS */}
           <div className="flex border-b border-slate-800">
@@ -878,7 +1259,8 @@ export default function App() {
               { id: 'discovery',  icon: <Search   className="w-4 h-4" />, label: 'Discovery Ativo (SSH)' },
               { id: 'upload',     icon: <Upload    className="w-4 h-4" />, label: 'Upload Offline' },
               { id: 'risk',       icon: <Shield    className="w-4 h-4" />, label: 'Matriz de Riscos' },
-              { id: 'assessment', icon: <Activity  className="w-4 h-4" />, label: 'Assessment Network' },            ] as const).map(tab => (
+              { id: 'assessment', icon: <Activity  className="w-4 h-4" />, label: 'Assessment Network' },
+            ] as const).map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
