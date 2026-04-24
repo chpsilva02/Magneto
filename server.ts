@@ -6,15 +6,31 @@ import { applyLayout } from './src/server/services/layout.ts';
 import { generateDrawioXml } from './src/server/services/drawio.ts';
 import { COMMAND_PROFILES } from './src/server/services/profiles.ts';
 import { executeCommands } from './src/server/services/ssh.ts';
+import { generateRiskExcel, generateAssessmentExcel } from './src/server/services/risk-excel.ts';
+import { createRequire } from 'module';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const upload = multer({ storage: multer.memoryStorage() });
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const _require = createRequire(import.meta.url);
+
+// Risk analysis engines (one per vendor)
+const { runRiskAnalysis } = _require('./src/server/services/risk-analysis.cjs');
+
+// Assessment full parser — extracts CDP, VLANs, STP, trunk, port-channel, BGP, OSPF, etc.
+const { parseAssessmentDevice } = _require('./src/server/services/assessment-parser.cjs');
+
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024, files: 200 }
+});
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
   // API Routes
   app.get('/api/profiles', (req, res) => {
@@ -107,6 +123,141 @@ async function startServer() {
     } catch (error: any) {
       console.error('Upload Error:', error);
       res.status(500).json({ error: `Erro interno ao processar arquivos: ${error.message}` });
+    }
+  });
+
+  // ── Risk Assessment: analyse log text ──────────────────────────────────────
+  // POST /api/risk-analysis
+  // Body: { log: string, vendor: string, hostname?: string, ip?: string, model?: string, osVersion?: string }
+  // Returns: { items: RiskItem[] }
+  app.post('/api/risk-analysis', (req: any, res: any) => {
+    try {
+      const { log, vendor, hostname, ip, model, osVersion } = req.body;
+      if (!log) return res.status(400).json({ error: 'log is required' });
+      const items = runRiskAnalysis(log, vendor || 'cisco_ios');
+      res.json({ items, hostname, ip, model, osVersion, vendor });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Risk Assessment: export Excel ───────────────────────────────────────────
+  // POST /api/risk-excel
+  // Body: { devices: DeviceAssessment[] }
+  // Returns: xlsx file stream
+  app.post('/api/risk-excel', async (req: any, res: any) => {
+    try {
+      const { devices } = req.body;
+      if (!devices?.length) return res.status(400).json({ error: 'devices array required' });
+      const buf = await generateRiskExcel(devices);
+      const date = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="Magneto_Assessment_${date}.xlsx"`);
+      res.send(buf);
+    } catch (err: any) {
+      console.error('Risk Excel error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Assessment Network: export Excel (Assessment format) ─────────────────
+  app.post('/api/assessment-excel', async (req: any, res: any) => {
+    try {
+      const { devices, label } = req.body;
+      if (!devices?.length) return res.status(400).json({ error: 'devices array required' });
+      const buf = await generateAssessmentExcel(devices, label || 'Magneto NTG');
+      const date = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="Assessment_${date}.xlsx"`);
+      res.send(buf);
+    } catch (err: any) {
+      console.error('Assessment Excel error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // POST /api/risk-upload  (multipart, field: logs[])
+  // Auto-detects vendor — runs both runRiskAnalysis (Matriz) AND parseAssessmentDevice (Assessment)
+  // Returns: { devices: DeviceAssessment[] }  — ready for both risk-excel and assessment-excel
+  app.post('/api/risk-upload', upload.array('logs'), (req: any, res: any) => {
+    try {
+      const files = req.files as Express.Multer.File[];
+      if (!files?.length) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+
+      function detectVendor(log: string): string {
+        if (/dell emc smartfabric|os10|dell networking os/i.test(log))    return 'dell_os10';
+        if (/huawei versatile routing|vrp software|huawei.*version/i.test(log) ||
+            /\[.*\]$/m.test(log) && /display version/i.test(log))          return 'huawei_vrp';
+        if (/comware software|hp.*comware|hpe.*comware|h3c/i.test(log))   return 'hpe_comware';
+        if (/cisco nexus|nxos|nx-os|n[0-9][kk]-|feature vpc/i.test(log)) return 'cisco_nxos';
+        return 'cisco_ios';
+      }
+
+      const devices = files.map(file => {
+        const log    = file.buffer.toString('utf-8');
+        const vendor = detectVendor(log);
+
+        // ── 1. Risk analysis items (Matriz de Riscos) ─────────────────────
+        const items = runRiskAnalysis(log, vendor);
+
+        // ── 2. Full assessment parse (CDP, VLANs, STP, trunk, port-channel, BGP...) ─
+        let parsed: any = {};
+        try {
+          parsed = parseAssessmentDevice(log);
+        } catch (e: any) {
+          console.warn('[risk-upload] parseAssessmentDevice failed:', e.message);
+        }
+
+        // ── 3. Map parsed fields to DeviceAssessment ──────────────────────
+        const hostname  = parsed.hostname  || file.originalname.replace(/\.(txt|log)$/i, '');
+        const ip        = parsed.mgmtIp    || parsed.ip || '';
+        const model     = parsed.model     || '';
+        const osVersion = parsed.ios_ver   || '';
+        const serial    = parsed.serial    || '';
+
+        return {
+          // Core fields
+          hostname, ip, vendor, model, osVersion, serial, items,
+          // Metadata
+          mgmtIntf:    parsed.mgmtIntf    || '',
+          mgmtMask:    parsed.mgmtMask    || '',
+          mgmtType:    parsed.mgmtType    || '',
+          defaultGw:   parsed.defaultGw   || '',
+          uptime:      parsed.uptime      || '',
+          image:       parsed.image       || '',
+          // Assessment data tables
+          cdp:             parsed.cdp             || [],
+          lldp:            parsed.lldp            || [],
+          vlans:           parsed.vlans           || [],
+          vtpVer:          parsed.vtpVer          || '',
+          vtpDomain:       parsed.vtpDomain       || '',
+          vtpMode:         parsed.vtpMode         || '',
+          vtpVlans:        parsed.vtpVlans        || '',
+          vtpRev:          parsed.vtpRev          || '',
+          vtpPwd:          parsed.vtpPwd          || '',
+          stp:             parsed.stp             || [],
+          intVlan:         parsed.intVlan         || [],
+          hsrp:            parsed.hsrp            || [],
+          vrrp:            parsed.vrrp            || [],
+          glbp:            parsed.glbp            || [],
+          portch:          parsed.portch          || [],
+          trunk:           parsed.trunk           || [],
+          staticRt:        parsed.staticRt        || [],
+          ospfProcs:       parsed.ospfProcs       || [],
+          ospfNeighbors:   parsed.ospfNeighbors   || [],
+          eigrp:           parsed.eigrp           || [],
+          eigrpNeighbors:  parsed.eigrpNeighbors  || [],
+          bgp:             parsed.bgp             || [],
+          bgpNeighbors:    parsed.bgpNeighbors    || [],
+          intSt:           parsed.intSt           || [],
+          arpTable:        parsed.arpTable        || [],
+          macTable:        parsed.macTable        || [],
+          stackMembers:    parsed.stackMembers    || [],
+        };
+      });
+
+      res.json({ devices });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
